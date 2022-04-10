@@ -1,14 +1,15 @@
 use std::sync::Arc;
 
 use crate::{
-    main_window::{EventProxy, MainWindowModel, UserEvent},
+    main_window::{EventProxy, MainWindowApp, UserEvent},
     windows::{MenuItem, NotifyIcon, PopupMenu},
 };
 
 use anyhow::{Context, Result};
-use egui::{ClippedMesh, TexturesDelta};
+use egui::{ClippedMesh, Context as EguiContext, RawInput, TexturesDelta};
 use egui_wgpu_backend::{RenderPass as EguiRenderPass, ScreenDescriptor};
 use egui_winit::State as EguiState;
+use epi::App;
 use log::error;
 use wgpu::TextureView;
 use windows::Win32::{
@@ -50,9 +51,10 @@ pub struct MainWindow {
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface_config: wgpu::SurfaceConfiguration,
+    egui_context: EguiContext,
     egui_state: EguiState,
     egui_render_pass: EguiRenderPass,
-    application: MainWindowModel,
+    application: MainWindowApp,
 }
 
 impl MainWindow {
@@ -139,11 +141,12 @@ impl MainWindow {
         };
 
         // Create egui related objects
+        let egui_context = EguiContext::default();
         let egui_state = EguiState::new(4096, &window);
         let egui_render_pass = EguiRenderPass::new(&device, surface_format, 1);
 
         // Create application logic
-        let application = MainWindowModel::new(event_proxy.clone());
+        let application = MainWindowApp::default();
 
         Ok(MainWindow {
             window,
@@ -156,6 +159,7 @@ impl MainWindow {
             device,
             queue,
             surface_config,
+            egui_context,
             egui_state,
             egui_render_pass,
             application,
@@ -189,7 +193,7 @@ impl MainWindow {
                 None
             }
             event => {
-                self.egui_state.on_event(self.application.context(), &event);
+                self.egui_state.on_event(&self.egui_context, &event);
                 None
             }
         }
@@ -209,9 +213,8 @@ impl MainWindow {
 
         // Update view
         let input = self.egui_state.take_egui_input(&self.window);
-        let (commands, textures_delta, repainting) = self
-            .application
-            .draw(input, self.window.scale_factor() as f32);
+        let (commands, textures_delta, repainting) =
+            self.draw_egui(input, self.window.scale_factor() as f32);
 
         let screen_descriptor = ScreenDescriptor {
             physical_width: self.surface_config.width,
@@ -258,6 +261,38 @@ impl MainWindow {
             }
             _ => (),
         }
+    }
+
+    /// Repaint egui.
+    fn draw_egui(
+        &mut self,
+        input: RawInput,
+        scale_factor: f32,
+    ) -> (Vec<ClippedMesh>, TexturesDelta, bool) {
+        self.egui_context.begin_frame(input);
+
+        let app_output = epi::backend::AppOutput::default();
+        let frame = epi::Frame::new(epi::backend::FrameData {
+            info: epi::IntegrationInfo {
+                name: "egui_wgpu",
+                web_info: None,
+                cpu_usage: None,
+                native_pixels_per_point: Some(scale_factor),
+                prefer_dark_mode: None,
+            },
+            output: app_output,
+            repaint_signal: self.event_proxy.clone(),
+        });
+
+        self.application.update(&self.egui_context, &frame);
+
+        let full_output = self.egui_context.end_frame();
+        let paint_jobs = self.egui_context.tessellate(full_output.shapes);
+        (
+            paint_jobs,
+            full_output.textures_delta,
+            full_output.needs_repaint,
+        )
     }
 
     /// Uploads all information to the GPU.

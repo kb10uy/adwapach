@@ -1,60 +1,55 @@
-use crate::main_window::{EventProxy, MainWindowView};
+use egui::Context as EguiContext;
+use epi::{App as EpiApp, Frame as EpiFrame};
 
-use std::sync::Arc;
-
-use egui::{ClippedMesh, Context as EguiContext, RawInput, TexturesDelta};
-use epi::App;
-
-pub struct MainWindowModel {
-    egui_context: EguiContext,
-    event_proxy: Arc<EventProxy>,
-    view: MainWindowView,
+pub struct MainWindowApp {
+    pub should_exit: bool,
 }
 
-impl MainWindowModel {
-    pub fn new(event_proxy: Arc<EventProxy>) -> MainWindowModel {
-        let egui_context = EguiContext::default();
-        let view = MainWindowView::default();
-
-        MainWindowModel {
-            egui_context,
-            event_proxy,
-            view,
-        }
+impl Default for MainWindowApp {
+    fn default() -> MainWindowApp {
+        MainWindowApp { should_exit: false }
     }
+}
 
-    pub fn context(&self) -> &EguiContext {
-        &self.egui_context
-    }
-
-    pub fn draw(
-        &mut self,
-        input: RawInput,
-        scale_factor: f32,
-    ) -> (Vec<ClippedMesh>, TexturesDelta, bool) {
-        self.egui_context.begin_frame(input);
-
-        let app_output = epi::backend::AppOutput::default();
-        let frame = epi::Frame::new(epi::backend::FrameData {
-            info: epi::IntegrationInfo {
-                name: "egui_example",
-                web_info: None,
-                cpu_usage: None,
-                native_pixels_per_point: Some(scale_factor),
-                prefer_dark_mode: None,
-            },
-            output: app_output,
-            repaint_signal: self.event_proxy.clone(),
+impl EpiApp for MainWindowApp {
+    fn update(&mut self, ctx: &EguiContext, _frame: &EpiFrame) {
+        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            // The top panel is often a good place for a menu bar:
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("Application", |ui| {
+                    self.should_exit = ui.button("Quit").clicked();
+                });
+            });
         });
 
-        self.view.update(&self.egui_context, &frame);
+        egui::SidePanel::left("side_panel").show(ctx, |ui| {
+            ui.heading("Side Panel");
 
-        let full_output = self.egui_context.end_frame();
-        let paint_jobs = self.egui_context.tessellate(full_output.shapes);
-        (
-            paint_jobs,
-            full_output.textures_delta,
-            full_output.needs_repaint,
-        )
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.label("powered by ");
+                    ui.hyperlink_to("egui", "https://github.com/emilk/egui");
+                    ui.label(" and ");
+                    ui.hyperlink_to("eframe", "https://github.com/emilk/egui/tree/master/eframe");
+                });
+            });
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            // The central panel the region left after adding TopPanel's and SidePanel's
+
+            ui.heading("eframe template");
+            ui.hyperlink("https://github.com/emilk/eframe_template");
+            ui.add(egui::github_link_file!(
+                "https://github.com/emilk/eframe_template/blob/master/",
+                "Source code."
+            ));
+            egui::warn_if_debug_build(ui);
+        });
+    }
+
+    fn name(&self) -> &str {
+        "Adwapach"
     }
 }
