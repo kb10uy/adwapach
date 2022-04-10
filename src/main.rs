@@ -7,7 +7,10 @@ use crate::{
 };
 
 use anyhow::Result;
-use winit::{event::Event, event_loop::EventLoop};
+use winit::{
+    event::Event,
+    event_loop::{ControlFlow, EventLoop},
+};
 
 #[async_std::main]
 async fn main() -> Result<()> {
@@ -41,12 +44,19 @@ async fn main() -> Result<()> {
                 main_window.after_events();
                 None
             }
-            Event::UserEvent(UserEvent::NotifyIconMessage(window_id, msg))
+            Event::UserEvent(UserEvent::MenuItem(window_id, mid))
                 if window_id == main_window_id =>
             {
-                main_window.on_notify_icon(msg);
+                main_window.on_menu_select(mid);
                 None
             }
+            Event::UserEvent(UserEvent::NotifyIconMessage(window_id, msg, x, y))
+                if window_id == main_window_id =>
+            {
+                main_window.on_notify_icon(msg, x, y);
+                None
+            }
+            Event::UserEvent(UserEvent::ExitRequested) => Some(ControlFlow::Exit),
             _ => None,
         };
         if let Some(flow) = new_flow {

@@ -1,3 +1,8 @@
+use crate::{
+    main_window::create_icon_buffer,
+    windows::{subclass_window_procedure, SubclassProxy},
+};
+
 use std::{ffi::OsString, mem::size_of, os::windows::ffi::OsStrExt, ptr::NonNull};
 
 use anyhow::Result;
@@ -5,14 +10,14 @@ use uuid::Uuid;
 use windows::{
     core::GUID,
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+        Foundation::{HINSTANCE, HWND},
         UI::{
             Shell::{
-                DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, Shell_NotifyIconW,
-                NIF_GUID, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_SETVERSION,
-                NOTIFYICONDATAW, NOTIFYICONDATAW_0, NOTIFYICON_VERSION_4,
+                RemoveWindowSubclass, SetWindowSubclass, Shell_NotifyIconW, NIF_GUID, NIF_ICON,
+                NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_SETVERSION, NOTIFYICONDATAW,
+                NOTIFYICONDATAW_0, NOTIFYICON_VERSION_4,
             },
-            WindowsAndMessaging::WM_APP,
+            WindowsAndMessaging::{CreateIcon, DestroyIcon, WM_APP},
         },
     },
 };
@@ -20,13 +25,7 @@ use windows::{
 pub struct NotifyIcon {
     hwnd: HWND,
     uuid: Uuid,
-    callback_id: u32,
-    proxy_ptr: NonNull<NotifyIconProxy>,
-}
-
-struct NotifyIconProxy {
-    callback_id: u32,
-    on_event: Box<dyn Fn(u16, (i16, i16))>,
+    proxy_ptr: NonNull<SubclassProxy>,
 }
 
 impl NotifyIcon {
@@ -34,14 +33,37 @@ impl NotifyIcon {
         hwnd: HWND,
         callback_id: u32,
         tooltip: &str,
+        icon_image: &[u8],
         on_event: F,
     ) -> Result<NotifyIcon> {
         // NotifyIconProxy as forgotten pointer
-        let proxy_ptr = NonNull::new(Box::into_raw(Box::new(NotifyIconProxy {
-            callback_id,
-            on_event: Box::new(on_event),
-        })))
-        .expect("Should exist");
+        let notify_mid = WM_APP + callback_id;
+        let proxy = SubclassProxy::new(move |_, msg, wparam, lparam| {
+            if msg != notify_mid {
+                return false;
+            }
+
+            on_event(
+                (lparam.0 & 0xFFFF) as u16,
+                ((wparam.0 & 0xFFFF) as i16, (wparam.0 >> 16) as i16),
+            );
+            true
+        });
+        let proxy_ptr = NonNull::new(Box::into_raw(Box::new(proxy))).expect("Should exist");
+
+        // HICON
+        let (xor_image, and_image, w, h) = create_icon_buffer(icon_image)?;
+        let hicon = unsafe {
+            CreateIcon(
+                HINSTANCE(0),
+                w as i32,
+                h as i32,
+                1,
+                32,
+                and_image.as_ptr(),
+                xor_image.as_ptr(),
+            )?
+        };
 
         // Icon GUID
         let uuid = Uuid::new_v4();
@@ -71,7 +93,8 @@ impl NotifyIcon {
             uFlags: NIF_GUID | NIF_TIP | NIF_ICON | NIF_MESSAGE,
             guidItem: guid,
             hWnd: hwnd,
-            uCallbackMessage: WM_APP + callback_id,
+            hIcon: hicon,
+            uCallbackMessage: notify_mid,
             Anonymous: NOTIFYICONDATAW_0 {
                 uVersion: NOTIFYICON_VERSION_4,
             },
@@ -84,40 +107,18 @@ impl NotifyIcon {
             Shell_NotifyIconW(NIM_SETVERSION, &nid);
             SetWindowSubclass(
                 hwnd,
-                Some(NotifyIcon::subclass_window_procedure),
-                callback_id as usize,
+                Some(subclass_window_procedure),
                 proxy_ptr.as_ptr() as usize,
+                0,
             );
+            DestroyIcon(hicon);
         }
 
         Ok(NotifyIcon {
             hwnd,
             uuid,
-            callback_id,
             proxy_ptr,
         })
-    }
-
-    /// Processes subclass message.
-    unsafe extern "system" fn subclass_window_procedure(
-        hwnd: HWND,
-        msg: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-        _id: usize,
-        data: usize,
-    ) -> LRESULT {
-        let proxy = &mut *(data as *mut NotifyIconProxy);
-        if msg != WM_APP + proxy.callback_id {
-            return DefSubclassProc(hwnd, msg, wparam, lparam);
-        }
-
-        let message = (lparam.0 & 0xFFFF) as u16;
-        let x = (wparam.0 & 0xFFFF) as i16;
-        let y = (wparam.0 >> 16) as i16;
-        (proxy.on_event)(message, (x, y));
-
-        LRESULT(1)
     }
 }
 
@@ -148,11 +149,10 @@ impl Drop for NotifyIcon {
             Shell_NotifyIconW(NIM_DELETE, &nid);
             RemoveWindowSubclass(
                 self.hwnd,
-                Some(NotifyIcon::subclass_window_procedure),
-                self.callback_id as usize,
+                Some(subclass_window_procedure),
+                self.proxy_ptr.as_ptr() as usize,
             );
+            drop(Box::from_raw(self.proxy_ptr.as_ptr()));
         }
-
-        drop(unsafe { Box::from_raw(self.proxy_ptr.as_ptr()) });
     }
 }

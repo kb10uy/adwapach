@@ -1,6 +1,8 @@
+use std::sync::Arc;
+
 use crate::{
     main_window::{EventProxy, MainWindowContext, UserEvent},
-    windows::NotifyIcon,
+    windows::{MenuItem, NotifyIcon, PopupMenu},
 };
 
 use anyhow::{Context, Result};
@@ -9,22 +11,38 @@ use egui_wgpu_backend::{RenderPass as EguiRenderPass, ScreenDescriptor};
 use egui_winit::State as EguiState;
 use log::error;
 use wgpu::TextureView;
-use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::WM_LBUTTONUP};
+use windows::Win32::{
+    Foundation::HWND,
+    UI::WindowsAndMessaging::{WM_CONTEXTMENU, WM_LBUTTONUP},
+};
 use winit::{
     dpi::LogicalSize,
     event::WindowEvent,
     event_loop::{ControlFlow, EventLoop},
     platform::windows::{WindowBuilderExtWindows, WindowExtWindows},
-    window::{Window, WindowBuilder, WindowId},
+    window::{Icon, Window, WindowBuilder, WindowId},
 };
+
+const APPLICATION_TITLE: &str = "Adwapach";
+
+const ICON_IMAGE_PNG: &[u8] = include_bytes!("../../resources/Adwapach.png");
+const NOTIFY_ICON_MESSAGE_ID: u32 = 1;
+
+const MENU_ID_SHOW: u32 = 0x1001;
+const MENU_ID_EXIT: u32 = 0x1002;
+const TASK_MENU_ITEMS: &[MenuItem] = &[
+    MenuItem("Show Window", MENU_ID_SHOW),
+    MenuItem("Exit", MENU_ID_EXIT),
+];
 
 const ENCODER_DESCRIPTION: wgpu::CommandEncoderDescriptor = wgpu::CommandEncoderDescriptor {
     label: Some("Egui Encoder"),
 };
-const NOTIFY_ICON_MESSAGE_ID: u32 = 1;
 
 pub struct MainWindow {
     window: Window,
+    event_proxy: Arc<EventProxy>,
+    task_menu: PopupMenu,
     _notify_icon: NotifyIcon,
     _instance: wgpu::Instance,
     _adapter: wgpu::Adapter,
@@ -42,27 +60,46 @@ impl MainWindow {
         let event_proxy = EventProxy::new(event_loop);
 
         // Create window
+        let (icon_image, w, h) = {
+            let image = image::load_from_memory(ICON_IMAGE_PNG)?;
+            let w = image.width();
+            let h = image.height();
+            let icon_image = image.to_rgba8().to_vec();
+            (icon_image, w, h)
+        };
+        let icon = Icon::from_rgba(icon_image, w, h)?;
         let window = WindowBuilder::new()
             .with_decorations(true)
             .with_resizable(true)
             .with_transparent(false)
             .with_drag_and_drop(false)
-            .with_title("Adwapach")
             .with_inner_size(LogicalSize::new(1280, 720))
+            .with_window_icon(Some(icon))
+            .with_title(APPLICATION_TITLE)
             .build(event_loop)?;
-
-        // Create notify icon
         let hwnd = HWND(window.hwnd() as _);
         let window_id = window.id();
+
+        // Create popup menu
+        let menu_event_proxy = event_proxy.clone();
+        let task_menu = PopupMenu::new(hwnd, TASK_MENU_ITEMS, move |mid| {
+            let locked = menu_event_proxy.0.lock().expect("Poisoned");
+            locked
+                .send_event(UserEvent::MenuItem(window_id, mid))
+                .expect("EventLoop closed");
+        })?;
+
+        // Create notify icon
         let notify_event_proxy = event_proxy.clone();
         let notify_icon = NotifyIcon::new(
             hwnd,
             NOTIFY_ICON_MESSAGE_ID,
-            "Adwapach",
-            move |message, _| {
+            APPLICATION_TITLE,
+            ICON_IMAGE_PNG,
+            move |message, (x, y)| {
                 let locked = notify_event_proxy.0.lock().expect("Poisoned");
                 locked
-                    .send_event(UserEvent::NotifyIconMessage(window_id, message))
+                    .send_event(UserEvent::NotifyIconMessage(window_id, message, x, y))
                     .expect("EventLoop closed");
             },
         )?;
@@ -106,14 +143,16 @@ impl MainWindow {
         let egui_render_pass = EguiRenderPass::new(&device, surface_format, 1);
 
         // Create application logic
-        let application = MainWindowContext::new(event_proxy);
+        let application = MainWindowContext::new(event_proxy.clone());
 
         Ok(MainWindow {
             window,
+            event_proxy,
+            task_menu,
             _notify_icon: notify_icon,
             _instance: instance,
-            surface,
             _adapter: adapter,
+            surface,
             device,
             queue,
             surface_config,
@@ -193,10 +232,31 @@ impl MainWindow {
         }
     }
 
+    pub fn on_menu_select(&self, mid: u32) {
+        match mid {
+            MENU_ID_SHOW => {
+                self.window.set_visible(true);
+            }
+            MENU_ID_EXIT => {
+                let locked = self.event_proxy.0.lock().expect("Poisoned");
+                locked
+                    .send_event(UserEvent::ExitRequested)
+                    .expect("EventLoop closed");
+            }
+            _ => (),
+        }
+    }
+
     /// Called when related `NotifyIcon` triggered events.
-    pub fn on_notify_icon(&self, msg: u16) {
-        if msg == WM_LBUTTONUP as u16 {
-            self.window.set_visible(true);
+    pub fn on_notify_icon(&self, msg: u16, x: i16, y: i16) {
+        match msg as u32 {
+            WM_LBUTTONUP => {
+                self.window.set_visible(true);
+            }
+            WM_CONTEXTMENU => {
+                self.task_menu.track_at(x as i32, y as i32);
+            }
+            _ => (),
         }
     }
 
