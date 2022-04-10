@@ -7,7 +7,7 @@ use std::ptr::null;
 use anyhow::Result;
 use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
-    System::Com::{CoInitializeEx, COINIT_MULTITHREADED},
+    System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED},
     UI::Shell::DefSubclassProc,
 };
 
@@ -18,7 +18,7 @@ pub use self::wallpaper::{Monitor, Wallpaper};
 /// Initializes COM.
 pub fn initialize_com() -> Result<()> {
     unsafe {
-        CoInitializeEx(null(), COINIT_MULTITHREADED)?;
+        CoInitializeEx(null(), COINIT_APARTMENTTHREADED)?;
     }
     Ok(())
 }

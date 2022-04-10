@@ -1,4 +1,7 @@
-use crate::main_window::{EventProxy, UserEvent};
+use crate::{
+    main_window::{EventProxy, UserEvent},
+    windows::Monitor,
+};
 
 use std::sync::Arc;
 
@@ -7,11 +10,16 @@ use epi::{App as EpiApp, Frame as EpiFrame};
 
 pub struct MainWindowApp {
     event_proxy: Option<Arc<EventProxy>>,
+    monitors: Vec<Monitor>,
 }
 
 impl MainWindowApp {
     pub fn attach_event_loop(&mut self, proxy: Arc<EventProxy>) {
         self.event_proxy = Some(proxy);
+    }
+
+    pub fn set_monitors(&mut self, monitors: Vec<Monitor>) {
+        self.monitors = monitors;
     }
 
     /// Tells the window to quit.
@@ -29,7 +37,10 @@ impl MainWindowApp {
 
 impl Default for MainWindowApp {
     fn default() -> MainWindowApp {
-        MainWindowApp { event_proxy: None }
+        MainWindowApp {
+            event_proxy: None,
+            monitors: vec![],
+        }
     }
 }
 
@@ -50,6 +61,11 @@ impl EpiApp for MainWindowApp {
             ui.heading("Side Panel");
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                for monitor in &self.monitors {
+                    ui.vertical(|ui| {
+                        ui.label(monitor.id_as_string());
+                    });
+                }
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     ui.label("powered by ");

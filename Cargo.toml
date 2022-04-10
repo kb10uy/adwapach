@@ -11,13 +11,13 @@ strip = "debuginfo"
 
 [dependencies]
 anyhow = "1.0.56"
-async-std = { version = "1.11.0", features = ["attributes"] }
 egui = "0.17.0"
 egui_wgpu_backend = "0.17.0"
 egui-winit = "0.17.0"
 epi = "0.17.0"
 image = "0.24.1"
 log = "0.4.16"
+pollster = "0.2.5"
 time = { version = "0.3.9", features = ["local-offset"] }
 uuid = { version = "1.0.0-alpha.1", features = ["v4"] }
 vek = "0.15.7"

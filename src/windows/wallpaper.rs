@@ -48,6 +48,8 @@ pub struct Wallpaper {
     interface: IDesktopWallpaper,
 }
 
+unsafe impl Send for Wallpaper {}
+
 impl Wallpaper {
     /// Initializes `IDesktopWallpaper` internally.
     pub fn new() -> Result<Wallpaper> {
