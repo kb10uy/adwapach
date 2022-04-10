@@ -4,9 +4,11 @@ mod main_window;
 mod windows;
 
 use crate::{
-    main_window::{MainWindow, UserEvent},
+    main_window::{MainWindow, MainWindowApp, UserEvent},
     windows::{initialize_com, Wallpaper},
 };
+
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use winit::{
@@ -31,7 +33,8 @@ async fn main() -> Result<()> {
 
     let event_loop = EventLoop::with_user_event();
 
-    let mut main_window = MainWindow::create(&event_loop).await?;
+    let mut main_window_app = Arc::new(Mutex::new(MainWindowApp::default()));
+    let mut main_window = MainWindow::create(&event_loop, main_window_app).await?;
     let main_window_id = main_window.window_id();
 
     event_loop.run(move |event, _, control_flow| {
@@ -65,6 +68,4 @@ async fn main() -> Result<()> {
             *control_flow = flow;
         }
     });
-
-    // Ok(())
 }

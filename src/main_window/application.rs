@@ -1,13 +1,35 @@
+use crate::main_window::{EventProxy, UserEvent};
+
+use std::sync::Arc;
+
 use egui::Context as EguiContext;
 use epi::{App as EpiApp, Frame as EpiFrame};
 
 pub struct MainWindowApp {
-    pub should_exit: bool,
+    event_proxy: Option<Arc<EventProxy>>,
+}
+
+impl MainWindowApp {
+    pub fn attach_event_loop(&mut self, proxy: Arc<EventProxy>) {
+        self.event_proxy = Some(proxy);
+    }
+
+    /// Tells the window to quit.
+    pub fn request_exit(&self) {
+        if let Some(proxy) = &self.event_proxy {
+            proxy
+                .0
+                .lock()
+                .expect("Poisoned")
+                .send_event(UserEvent::ExitRequested)
+                .expect("EventLoop closed");
+        }
+    }
 }
 
 impl Default for MainWindowApp {
     fn default() -> MainWindowApp {
-        MainWindowApp { should_exit: false }
+        MainWindowApp { event_proxy: None }
     }
 }
 
@@ -17,7 +39,9 @@ impl EpiApp for MainWindowApp {
             // The top panel is often a good place for a menu bar:
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("Application", |ui| {
-                    self.should_exit = ui.button("Quit").clicked();
+                    if ui.button("Quit").clicked() {
+                        self.request_exit();
+                    }
                 });
             });
         });

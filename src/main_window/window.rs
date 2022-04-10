@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::{
     main_window::{EventProxy, MainWindowApp, UserEvent},
@@ -54,11 +54,14 @@ pub struct MainWindow {
     egui_context: EguiContext,
     egui_state: EguiState,
     egui_render_pass: EguiRenderPass,
-    application: MainWindowApp,
+    application: Arc<Mutex<MainWindowApp>>,
 }
 
 impl MainWindow {
-    pub async fn create(event_loop: &EventLoop<UserEvent>) -> Result<MainWindow> {
+    pub async fn create(
+        event_loop: &EventLoop<UserEvent>,
+        application: Arc<Mutex<MainWindowApp>>,
+    ) -> Result<MainWindow> {
         let event_proxy = EventProxy::new(event_loop);
 
         // Create window
@@ -146,7 +149,10 @@ impl MainWindow {
         let egui_render_pass = EguiRenderPass::new(&device, surface_format, 1);
 
         // Create application logic
-        let application = MainWindowApp::default();
+        {
+            let mut locked = application.lock().expect("Poisoned");
+            locked.attach_event_loop(event_proxy.clone());
+        }
 
         Ok(MainWindow {
             window,
@@ -284,7 +290,8 @@ impl MainWindow {
             repaint_signal: self.event_proxy.clone(),
         });
 
-        self.application.update(&self.egui_context, &frame);
+        let mut locked = self.application.lock().expect("Posioned");
+        locked.update(&self.egui_context, &frame);
 
         let full_output = self.egui_context.end_frame();
         let paint_jobs = self.egui_context.tessellate(full_output.shapes);
