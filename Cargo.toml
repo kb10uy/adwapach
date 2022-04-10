@@ -31,5 +31,3 @@ windows = { version = "0.35.0", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 winit = "0.26.1"
-
-egui_demo_lib = "0.17.0"

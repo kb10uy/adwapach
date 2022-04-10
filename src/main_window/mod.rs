@@ -1,8 +1,10 @@
 mod application;
 mod view;
+mod window;
 
-pub use self::application::MainWindowContext;
-pub use self::view::MainWindow;
+pub use self::application::MainWindowModel;
+pub use self::view::MainWindowView;
+pub use self::window::MainWindow;
 
 use std::sync::{Arc, Mutex};
 

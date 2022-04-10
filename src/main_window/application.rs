@@ -1,25 +1,25 @@
-use crate::main_window::EventProxy;
+use crate::main_window::{EventProxy, MainWindowView};
 
 use std::sync::Arc;
 
 use egui::{ClippedMesh, Context as EguiContext, RawInput, TexturesDelta};
 use epi::App;
 
-pub struct MainWindowContext {
+pub struct MainWindowModel {
     egui_context: EguiContext,
     event_proxy: Arc<EventProxy>,
-    demo_app: egui_demo_lib::WrapApp,
+    view: MainWindowView,
 }
 
-impl MainWindowContext {
-    pub fn new(event_proxy: Arc<EventProxy>) -> MainWindowContext {
+impl MainWindowModel {
+    pub fn new(event_proxy: Arc<EventProxy>) -> MainWindowModel {
         let egui_context = EguiContext::default();
-        let demo_app = egui_demo_lib::WrapApp::default();
+        let view = MainWindowView::default();
 
-        MainWindowContext {
+        MainWindowModel {
             egui_context,
             event_proxy,
-            demo_app,
+            view,
         }
     }
 
@@ -47,7 +47,7 @@ impl MainWindowContext {
             repaint_signal: self.event_proxy.clone(),
         });
 
-        self.demo_app.update(&self.egui_context, &frame);
+        self.view.update(&self.egui_context, &frame);
 
         let full_output = self.egui_context.end_frame();
         let paint_jobs = self.egui_context.tessellate(full_output.shapes);
