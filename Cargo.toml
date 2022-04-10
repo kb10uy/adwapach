@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 resolver = "2"
 
+[profile.production]
+inherits = "release"
+lto = "fat"
+strip = "debuginfo"
+
 [dependencies]
 anyhow = "1.0.56"
 async-std = { version = "1.11.0", features = ["attributes"] }
