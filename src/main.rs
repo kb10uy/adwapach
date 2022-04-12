@@ -1,4 +1,4 @@
-// #![windows_subsystem = "windows"]
+#![cfg_attr(production, windows_subsystem = "windows")]
 
 mod main_window;
 mod windows;
@@ -22,8 +22,6 @@ use winit::{
 };
 
 fn main() -> Result<()> {
-    initialize_com()?;
-
     let main_window_app = Arc::new(Mutex::new(MainWindowApp::default()));
 
     let main_app_control = main_window_app.clone();
@@ -72,7 +70,6 @@ fn run_application_task(main_app: Arc<Mutex<MainWindowApp>>) -> Result<()> {
     let wallpaper = Wallpaper::new()?;
     let monitors = wallpaper.monitors()?;
     {
-        println!("{monitors:?}");
         let mut locked = main_app.lock().expect("Poisoned");
         locked.set_monitors(monitors);
     }

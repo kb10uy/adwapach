@@ -8,6 +8,7 @@ resolver = "2"
 inherits = "release"
 lto = "fat"
 strip = "debuginfo"
+panic = "abort"
 
 [dependencies]
 anyhow = "1.0.56"

@@ -9,7 +9,10 @@ use anyhow::{Context, Result};
 use egui::{ClippedMesh, Context as EguiContext, RawInput, TexturesDelta};
 use egui_wgpu_backend::{RenderPass as EguiRenderPass, ScreenDescriptor};
 use egui_winit::State as EguiState;
-use epi::App;
+use epi::{
+    backend::{AppOutput, FrameData},
+    App, Frame as EpiFrame, IntegrationInfo,
+};
 use log::error;
 use wgpu::TextureView;
 use windows::Win32::{
@@ -54,6 +57,7 @@ pub struct MainWindow {
     egui_context: EguiContext,
     egui_state: EguiState,
     egui_render_pass: EguiRenderPass,
+    egui_base_frame: EpiFrame,
     application: Arc<Mutex<MainWindowApp>>,
 }
 
@@ -78,7 +82,7 @@ impl MainWindow {
             .with_resizable(true)
             .with_transparent(false)
             .with_drag_and_drop(false)
-            .with_inner_size(LogicalSize::new(1280, 720))
+            .with_inner_size(LogicalSize::new(640, 640))
             .with_window_icon(Some(icon))
             .with_title(APPLICATION_TITLE)
             .build(event_loop)?;
@@ -147,11 +151,23 @@ impl MainWindow {
         let egui_context = EguiContext::default();
         let egui_state = EguiState::new(4096, &window);
         let egui_render_pass = EguiRenderPass::new(&device, surface_format, 1);
+        let egui_base_frame = EpiFrame::new(FrameData {
+            info: IntegrationInfo {
+                name: "egui_wgpu",
+                native_pixels_per_point: Some(window.scale_factor() as f32),
+                web_info: None,
+                cpu_usage: None,
+                prefer_dark_mode: None,
+            },
+            output: AppOutput::default(),
+            repaint_signal: event_proxy.clone(),
+        });
 
         // Create application logic
         {
             let mut locked = application.lock().expect("Poisoned");
             locked.attach_event_loop(event_proxy.clone());
+            locked.setup(&egui_context, &egui_base_frame, None);
         }
 
         Ok(MainWindow {
@@ -168,6 +184,7 @@ impl MainWindow {
             egui_context,
             egui_state,
             egui_render_pass,
+            egui_base_frame,
             application,
         })
     }
@@ -277,21 +294,14 @@ impl MainWindow {
     ) -> (Vec<ClippedMesh>, TexturesDelta, bool) {
         self.egui_context.begin_frame(input);
 
-        let app_output = epi::backend::AppOutput::default();
-        let frame = epi::Frame::new(epi::backend::FrameData {
-            info: epi::IntegrationInfo {
-                name: "egui_wgpu",
-                web_info: None,
-                cpu_usage: None,
-                native_pixels_per_point: Some(scale_factor),
-                prefer_dark_mode: None,
-            },
-            output: app_output,
-            repaint_signal: self.event_proxy.clone(),
-        });
+        let frame = self.egui_base_frame.clone();
+        let mut frame_data = frame.0.lock().expect("Posioned");
+        frame_data.info.native_pixels_per_point = Some(scale_factor);
+        drop(frame_data);
 
-        let mut locked = self.application.lock().expect("Posioned");
-        locked.update(&self.egui_context, &frame);
+        let mut application = self.application.lock().expect("Posioned");
+        application.update(&self.egui_context, &frame);
+        drop(application);
 
         let full_output = self.egui_context.end_frame();
         let paint_jobs = self.egui_context.tessellate(full_output.shapes);

@@ -5,12 +5,16 @@ use crate::{
 
 use std::sync::Arc;
 
-use egui::Context as EguiContext;
-use epi::{App as EpiApp, Frame as EpiFrame};
+use egui::{
+    menu, CentralPanel, Context as EguiContext, FontId, Grid, RichText, Style, TextStyle,
+    TopBottomPanel,
+};
+use epi::{App as EpiApp, Frame as EpiFrame, Storage as EpiStorage};
 
 pub struct MainWindowApp {
     event_proxy: Option<Arc<EventProxy>>,
     monitors: Vec<Monitor>,
+    selected_monitor_index: Option<usize>,
 }
 
 impl MainWindowApp {
@@ -20,6 +24,11 @@ impl MainWindowApp {
 
     pub fn set_monitors(&mut self, monitors: Vec<Monitor>) {
         self.monitors = monitors;
+        self.selected_monitor_index = if self.monitors.len() > 0 {
+            Some(0)
+        } else {
+            None
+        };
     }
 
     /// Tells the window to quit.
@@ -40,15 +49,29 @@ impl Default for MainWindowApp {
         MainWindowApp {
             event_proxy: None,
             monitors: vec![],
+            selected_monitor_index: None,
         }
     }
 }
 
 impl EpiApp for MainWindowApp {
+    fn name(&self) -> &str {
+        "Adwapach"
+    }
+
+    fn setup(&mut self, ctx: &EguiContext, _frame: &EpiFrame, _storage: Option<&dyn EpiStorage>) {
+        let mut style = Style::default();
+        style.override_font_id = Some(FontId::proportional(16.0));
+        style
+            .text_styles
+            .insert(TextStyle::Button, FontId::proportional(18.0));
+
+        ctx.set_style(style);
+    }
+
     fn update(&mut self, ctx: &EguiContext, _frame: &EpiFrame) {
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            // The top panel is often a good place for a menu bar:
-            egui::menu::bar(ui, |ui| {
+        TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            menu::bar(ui, |ui| {
                 ui.menu_button("Application", |ui| {
                     if ui.button("Quit").clicked() {
                         self.request_exit();
@@ -57,39 +80,47 @@ impl EpiApp for MainWindowApp {
             });
         });
 
-        egui::SidePanel::left("side_panel").show(ctx, |ui| {
-            ui.heading("Side Panel");
+        let selected_monitor = match self.selected_monitor_index {
+            Some(i) => &self.monitors[i],
+            None => return,
+        };
+        let selected_size = selected_monitor.size();
+        let selected_position = selected_monitor.position();
 
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                for monitor in &self.monitors {
-                    ui.vertical(|ui| {
-                        ui.label(monitor.id_as_string());
-                    });
+        CentralPanel::default().show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for (i, monitor) in self.monitors.iter().enumerate() {
+                    ui.selectable_value(
+                        &mut self.selected_monitor_index,
+                        Some(i),
+                        format!("Monitor #{}", i + 1),
+                    )
+                    .on_hover_text(monitor.id_as_string());
                 }
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    ui.label("powered by ");
-                    ui.hyperlink_to("egui", "https://github.com/emilk/egui");
-                    ui.label(" and ");
-                    ui.hyperlink_to("eframe", "https://github.com/emilk/egui/tree/master/eframe");
-                });
             });
-        });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            // The central panel the region left after adding TopPanel's and SidePanel's
+            Grid::new("monitor_select")
+                .num_columns(2)
+                .min_col_width(128.0)
+                .show(ui, |ui| {
+                    ui.label(RichText::new("Position").strong())
+                        .on_hover_text("Top-left position of monitor, relative to first");
+                    ui.label(format!(
+                        "X: {}, Y: {}",
+                        selected_position.x, selected_position.y
+                    ));
+                    ui.end_row();
 
-            ui.heading("eframe template");
-            ui.hyperlink("https://github.com/emilk/eframe_template");
-            ui.add(egui::github_link_file!(
-                "https://github.com/emilk/eframe_template/blob/master/",
-                "Source code."
-            ));
+                    ui.label(RichText::new("Size").strong())
+                        .on_hover_text("Phyisical monitor size");
+                    ui.label(format!(
+                        "Width: {}, Height: {}",
+                        selected_size.x, selected_size.y
+                    ));
+                    ui.end_row();
+                });
+
             egui::warn_if_debug_build(ui);
         });
-    }
-
-    fn name(&self) -> &str {
-        "Adwapach"
     }
 }
