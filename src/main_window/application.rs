@@ -6,8 +6,9 @@ use crate::{
 use std::sync::Arc;
 
 use egui::{
-    menu, CentralPanel, Color32, Context as EguiContext, FontId, Grid, Id, Pos2 as UiPos2, Rect,
-    Response, RichText, Sense, Stroke, Style, TextStyle, TopBottomPanel, Ui, Vec2 as UiVec2,
+    menu, text::LayoutJob, Align, CentralPanel, Color32, Context as EguiContext, Direction, FontId,
+    Grid, Id, Layout, Pos2 as UiPos2, Rect, Response, RichText, ScrollArea, Sense, Stroke, Style,
+    TextFormat, TextStyle, TopBottomPanel, Ui, Vec2 as UiVec2,
 };
 use epi::{App as EpiApp, Frame as EpiFrame, Storage as EpiStorage};
 use vek::{Vec2, Vec4};
@@ -118,7 +119,13 @@ impl EpiApp for MainWindowApp {
         style.override_font_id = Some(FontId::proportional(16.0));
         style
             .text_styles
+            .insert(TextStyle::Body, FontId::proportional(16.0));
+        style
+            .text_styles
             .insert(TextStyle::Button, FontId::proportional(18.0));
+        style
+            .text_styles
+            .insert(TextStyle::Heading, FontId::proportional(20.0));
 
         ctx.set_style(style);
     }
@@ -152,6 +159,7 @@ impl EpiApp for MainWindowApp {
                         .on_hover_text(monitor.id_as_string());
                 }
             });
+            ui.separator();
             self.selected_monitor_index = Some(selected_index);
 
             Grid::new("monitor_info")
@@ -175,7 +183,15 @@ impl EpiApp for MainWindowApp {
                     ui.end_row();
                 });
 
-            egui::warn_if_debug_build(ui);
+            ui.separator();
+
+            ScrollArea::vertical().show(ui, |ui| {
+                for i in 0..10 {
+                    if self.ui_draw_image_item(ui, i).double_clicked() {
+                        println!("double-click {i}");
+                    }
+                }
+            });
         });
     }
 }
@@ -229,5 +245,37 @@ impl MainWindowApp {
         }
 
         response
+    }
+
+    /// Draw an item of wallpaper image list.
+    fn ui_draw_image_item(&self, ui: &mut Ui, i: usize) -> Response {
+        let left_center_layout =
+            Layout::centered_and_justified(Direction::TopDown).with_cross_align(Align::LEFT);
+        let head_style = TextFormat {
+            font_id: TextStyle::Heading.resolve(ui.style()),
+            color: Color32::WHITE,
+            ..Default::default()
+        };
+        let prop_style = TextFormat {
+            font_id: TextStyle::Body.resolve(ui.style()),
+            ..Default::default()
+        };
+
+        let inner_response = ui.horizontal(|ui| {
+            ui.allocate_painter(UiVec2::splat(100.0), Sense::click());
+            ui.with_layout(left_center_layout, |ui| {
+                let mut text = LayoutJob::default();
+                text.append(&format!("test{i}.jpg\n"), 0.0, head_style);
+                text.append("Size: 1920x1080\n", 0.0, prop_style.clone());
+                text.append("Fitting: Cover", 0.0, prop_style);
+                ui.label(text);
+            });
+        });
+
+        ui.interact(
+            inner_response.response.rect,
+            Id::new(format!("asdad{i}")),
+            Sense::click(),
+        )
     }
 }
