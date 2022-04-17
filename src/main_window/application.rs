@@ -1,23 +1,35 @@
 use crate::{
     main_window::{EventProxy, UserEvent},
+    model::application::Fitting,
     windows::Monitor,
 };
 
 use std::sync::Arc;
 
+use anyhow::Result;
 use egui::{
-    menu, text::LayoutJob, Align, CentralPanel, Color32, Context as EguiContext, Direction, FontId,
-    Grid, Id, Layout, Pos2 as UiPos2, Rect, Response, RichText, ScrollArea, Sense, Stroke, Style,
-    TextFormat, TextStyle, TopBottomPanel, Ui, Vec2 as UiVec2,
+    menu, text::LayoutJob, Align, CentralPanel, Color32, ColorImage, Context as EguiContext,
+    Direction, FontId, Grid, Id, Layout, Pos2 as UiPos2, Rect, Response, RichText, ScrollArea,
+    Sense, Stroke, Style, TextFormat, TextStyle, TextureHandle, TopBottomPanel, Ui, Vec2 as UiVec2,
 };
 use epi::{App as EpiApp, Frame as EpiFrame, Storage as EpiStorage};
+use native_dialog::FileDialog;
 use vek::{Vec2, Vec4};
+
+/// Wallpaper information for listing.
+struct WallpaperInfo {
+    filename: String,
+    size: Vec2<u32>,
+    fitting: Fitting,
+    texture_handle: TextureHandle,
+}
 
 pub struct MainWindowApp {
     event_proxy: Option<Arc<EventProxy>>,
     monitors: Vec<Monitor>,
     monitor_preview_rects: Vec<Vec4<f32>>,
     selected_monitor_index: Option<usize>,
+    wallpapers: Vec<WallpaperInfo>,
 }
 
 impl MainWindowApp {
@@ -85,6 +97,48 @@ impl MainWindowApp {
 
 /// UI Actions
 impl MainWindowApp {
+    /// Opens the file dialog adding image.
+    pub fn add_image(&mut self, ctx: &EguiContext) -> Result<()> {
+        let selected = FileDialog::new()
+            .add_filter("Supported Image Files", &["jpg", "jpeg", "png", "bmp"])
+            .show_open_single_file()
+            .expect("Invalid file open dialog");
+        let path = match selected {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        let filename = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+
+        let mut image = image::open(path.clone())?;
+        let size = Vec2::new(image.width(), image.height());
+        let rect_size = size.x.min(size.y);
+        image = image.crop(
+            (size.x - rect_size) / 2,
+            (size.y - rect_size) / 2,
+            rect_size,
+            rect_size,
+        );
+        let resized_image =
+            image::imageops::resize(&image, 512, 512, image::imageops::FilterType::Gaussian);
+
+        let ui_image = ColorImage::from_rgba_unmultiplied([512, 512], &resized_image);
+        let texture_handle = ctx.load_texture(&filename, ui_image);
+
+        self.wallpapers.push(WallpaperInfo {
+            filename,
+            size,
+            fitting: Fitting::Cover,
+            texture_handle,
+        });
+
+        Ok(())
+    }
+
     /// Tells the window to quit.
     pub fn request_exit(&self) {
         if let Some(proxy) = &self.event_proxy {
@@ -105,6 +159,7 @@ impl Default for MainWindowApp {
             monitors: vec![],
             monitor_preview_rects: vec![],
             selected_monitor_index: None,
+            wallpapers: vec![],
         }
     }
 }
@@ -155,8 +210,7 @@ impl EpiApp for MainWindowApp {
             });
             ui.horizontal_wrapped(|ui| {
                 for (i, monitor) in self.monitors.iter().enumerate() {
-                    ui.selectable_value(&mut selected_index, i, monitor.name())
-                        .on_hover_text(monitor.id_as_string());
+                    ui.selectable_value(&mut selected_index, i, monitor.name());
                 }
             });
             ui.separator();
@@ -185,12 +239,16 @@ impl EpiApp for MainWindowApp {
 
             ui.separator();
 
-            ScrollArea::vertical().show(ui, |ui| {
-                for i in 0..10 {
-                    if self.ui_draw_image_item(ui, i).double_clicked() {
-                        println!("double-click {i}");
-                    }
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Add Image").clicked() {
+                    self.add_image(ui.ctx());
                 }
+            });
+
+            ui.add_space(0.0);
+
+            ScrollArea::vertical().show(ui, |ui| {
+                self.ui_draw_image_items(ui);
             });
         });
     }
@@ -248,7 +306,7 @@ impl MainWindowApp {
     }
 
     /// Draw an item of wallpaper image list.
-    fn ui_draw_image_item(&self, ui: &mut Ui, i: usize) -> Response {
+    fn ui_draw_image_items(&mut self, ui: &mut Ui) {
         let left_center_layout =
             Layout::centered_and_justified(Direction::TopDown).with_cross_align(Align::LEFT);
         let head_style = TextFormat {
@@ -261,21 +319,56 @@ impl MainWindowApp {
             ..Default::default()
         };
 
-        let inner_response = ui.horizontal(|ui| {
-            ui.allocate_painter(UiVec2::splat(100.0), Sense::click());
-            ui.with_layout(left_center_layout, |ui| {
-                let mut text = LayoutJob::default();
-                text.append(&format!("test{i}.jpg\n"), 0.0, head_style);
-                text.append("Size: 1920x1080\n", 0.0, prop_style.clone());
-                text.append("Fitting: Cover", 0.0, prop_style);
-                ui.label(text);
+        for (i, info) in self.wallpapers.iter_mut().enumerate() {
+            let inner_response = ui.horizontal(|ui| {
+                ui.image(&info.texture_handle, UiVec2::splat(100.0));
+                ui.with_layout(left_center_layout, |ui| {
+                    let mut text = LayoutJob::default();
+                    text.append(&format!("{}\n", info.filename), 0.0, head_style.clone());
+                    text.append(
+                        &format!("Size: {}x{}\n", info.size.x, info.size.y),
+                        0.0,
+                        prop_style.clone(),
+                    );
+                    text.append(
+                        &format!("Fitting: {:?}", info.fitting),
+                        0.0,
+                        prop_style.clone(),
+                    );
+                    ui.label(text);
+                });
             });
-        });
 
-        ui.interact(
-            inner_response.response.rect,
-            Id::new(format!("asdad{i}")),
-            Sense::click(),
-        )
+            let response = ui
+                .interact(
+                    inner_response.response.rect,
+                    Id::new(format!("wallpaper_item_{i}")),
+                    Sense::click(),
+                )
+                .context_menu(|ui| {
+                    ui.menu_button("Change Fitting", |ui| {
+                        ui.selectable_value(&mut info.fitting, Fitting::Cover, "Cover");
+                        ui.selectable_value(&mut info.fitting, Fitting::Contain, "Contain");
+                        ui.selectable_value(&mut info.fitting, Fitting::Tile, "Tile");
+                        ui.selectable_value(&mut info.fitting, Fitting::Center, "Center");
+                    });
+
+                    ui.separator();
+
+                    ui.button("Move Up");
+                    ui.button("Move Down");
+
+                    ui.separator();
+
+                    if ui.button("Remove").clicked() {
+                        // TODO: Remove this item
+                        ui.close_menu();
+                    }
+                });
+
+            if response.double_clicked() {
+                println!("double-click {i}");
+            }
+        }
     }
 }

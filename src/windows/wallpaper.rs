@@ -1,8 +1,8 @@
 //! Provides desktop wallpaper manipulation.
 
 use std::{
-    collections::HashMap, ffi::OsString, mem::size_of, os::windows::prelude::OsStringExt,
-    ptr::null, slice::from_raw_parts,
+    borrow::Cow, collections::HashMap, ffi::OsString, mem::size_of,
+    os::windows::prelude::OsStringExt, ptr::null, slice::from_raw_parts,
 };
 
 use anyhow::{Context, Result};
@@ -20,11 +20,28 @@ use windows::{
     },
 };
 
+/// Identifies monitor.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MonitorId(Box<[u16]>);
+
+impl MonitorId {
+    /// Gets PCWSTR pointer for COM interface.
+    /// Valid until the object will be destroyed.
+    pub fn as_pcwstr(&self) -> PCWSTR {
+        PCWSTR(self.0.as_ptr())
+    }
+
+    /// Converts into lossy `String`.
+    pub fn to_string_lossy<'a>(&'a self) -> String {
+        OsString::from_wide(&self.0).to_string_lossy().to_string()
+    }
+}
+
 /// Represents a monitor.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Monitor {
     /// Monitor ID WSTR, which contains NUL word.
-    id: Box<[u16]>,
+    id: MonitorId,
 
     /// Monitor name.
     name: String,
@@ -38,8 +55,8 @@ pub struct Monitor {
 
 impl Monitor {
     /// Gets monitor ID as `String`.
-    pub fn id_as_string(&self) -> String {
-        OsString::from_wide(&self.id).to_string_lossy().to_string()
+    pub fn id(&self) -> &MonitorId {
+        &self.id
     }
 
     /// Gets monitor name.
@@ -77,7 +94,7 @@ impl Wallpaper {
 
     /// Fetches connected monitors information.
     pub fn monitors(&self) -> Result<Vec<Monitor>> {
-        let monitor_names = self.list_monitor_names()?;
+        let monitor_names = self.list_monitor_names();
 
         let monitor_count = unsafe { self.interface.GetMonitorDevicePathCount()? } as usize;
 
@@ -90,12 +107,13 @@ impl Wallpaper {
                     .context("Unterminated text")?;
 
                 // Contain NUL word
-                from_raw_parts(monitor_id_ptr, monitor_id_length + 1)
+                let id = from_raw_parts(monitor_id_ptr, monitor_id_length + 1)
                     .to_vec()
-                    .into_boxed_slice()
+                    .into_boxed_slice();
+                MonitorId(id)
             };
 
-            let rect = unsafe { self.interface.GetMonitorRECT(PCWSTR(id.as_ptr()))? };
+            let rect = unsafe { self.interface.GetMonitorRECT(PCWSTR(id.0.as_ptr()))? };
             let position = Vec2::new(rect.left, rect.top);
             let size = Vec2::new(rect.right - rect.left, rect.bottom - rect.top);
             let name = monitor_names
@@ -114,7 +132,8 @@ impl Wallpaper {
         Ok(monitors)
     }
 
-    fn list_monitor_names(&self) -> Result<HashMap<Box<[u16]>, String>> {
+    /// Lists available monitor Ids.
+    fn list_monitor_names(&self) -> HashMap<MonitorId, String> {
         let mut display_device = DISPLAY_DEVICEW {
             cb: size_of::<DISPLAY_DEVICEW>() as u32,
             ..Default::default()
@@ -160,10 +179,10 @@ impl Wallpaper {
                 .to_string_lossy()
                 .to_string();
 
-            name_pairs.insert(id, name);
+            name_pairs.insert(MonitorId(id), name);
             index += 1;
         }
 
-        Ok(name_pairs)
+        name_pairs
     }
 }

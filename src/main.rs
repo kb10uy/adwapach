@@ -1,5 +1,6 @@
 #![cfg_attr(production, windows_subsystem = "windows")]
 
+mod model;
 mod main_window;
 mod windows;
 
