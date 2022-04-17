@@ -1,8 +1,8 @@
 //! Provides desktop wallpaper manipulation.
 
 use std::{
-    borrow::Cow, collections::HashMap, ffi::OsString, mem::size_of,
-    os::windows::prelude::OsStringExt, ptr::null, slice::from_raw_parts,
+    collections::HashMap, ffi::OsString, mem::size_of, os::windows::prelude::OsStringExt,
+    ptr::null, slice::from_raw_parts,
 };
 
 use anyhow::{Context, Result};

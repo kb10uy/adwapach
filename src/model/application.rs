@@ -1,5 +1,5 @@
 use crate::{
-    model::{EventManager, Observable, Subscription, WeakSubscription},
+    model::{EventManager, Observable, Subscription},
     windows::Monitor,
 };
 
@@ -74,12 +74,24 @@ pub struct Application {
 }
 
 impl Application {
+    /// Constructs new model.
     pub fn new() -> Arc<Mutex<Application>> {
         Arc::new(Mutex::new(Application {
             subscribers: EventManager::new(),
             monitors: vec![],
             wallpapers: vec![],
         }))
+    }
+
+    /// Sets monitors information.
+    pub fn set_monitors(&mut self, monitors: Vec<Monitor>) {
+        self.monitors = monitors;
+        self.subscribers.notify(ApplicationEvent::MonitorsUpdated);
+    }
+
+    pub fn add_wallpaper(&mut self, wallpaper: Wallpaper) {
+        self.wallpapers.push(wallpaper);
+        self.subscribers.notify(ApplicationEvent::WallpapersUpdated);
     }
 }
 
@@ -88,7 +100,7 @@ impl Observable for Application {
 
     fn subscribe<S>(&self, subscription: S) -> Subscription<ApplicationEvent>
     where
-        S: Fn(ApplicationEvent) + Send + 'static,
+        S: Fn(ApplicationEvent) + Send + Sync + 'static,
     {
         self.subscribers.subscribe(subscription)
     }

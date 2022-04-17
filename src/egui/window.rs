@@ -1,9 +1,6 @@
-use std::sync::{Arc, Mutex};
+use crate::view::{EventProxy, RepaintableEvent, View};
 
-use crate::{
-    main_window::{EventProxy, MainWindowApp, UserEvent},
-    windows::{MenuItem, NotifyIcon, PopupMenu},
-};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use egui::{ClippedMesh, Context as EguiContext, RawInput, TexturesDelta};
@@ -11,107 +8,50 @@ use egui_wgpu_backend::{RenderPass as EguiRenderPass, ScreenDescriptor};
 use egui_winit::State as EguiState;
 use epi::{
     backend::{AppOutput, FrameData},
-    App, Frame as EpiFrame, IntegrationInfo,
+    Frame as EpiFrame, IntegrationInfo,
 };
 use log::error;
-use wgpu::TextureView;
-use windows::Win32::{
-    Foundation::HWND,
-    UI::WindowsAndMessaging::{WM_CONTEXTMENU, WM_LBUTTONUP},
-};
+use wgpu::{Device, Queue, Surface, SurfaceConfiguration, SurfaceError, TextureView};
 use winit::{
     dpi::LogicalSize,
     event::WindowEvent,
     event_loop::{ControlFlow, EventLoop},
-    platform::windows::{WindowBuilderExtWindows, WindowExtWindows},
-    window::{Icon, Window, WindowBuilder, WindowId},
+    platform::windows::WindowBuilderExtWindows,
+    window::{Window, WindowBuilder, WindowId},
 };
-
-const APPLICATION_TITLE: &str = "Adwapach";
-
-const ICON_IMAGE_PNG: &[u8] = include_bytes!("../../resources/Adwapach.png");
-const NOTIFY_ICON_MESSAGE_ID: u32 = 1;
-
-const MENU_ID_SHOW: u32 = 0x1001;
-const MENU_ID_EXIT: u32 = 0x1002;
-const TASK_MENU_ITEMS: &[MenuItem] = &[
-    MenuItem("Show Window", MENU_ID_SHOW),
-    MenuItem("Exit", MENU_ID_EXIT),
-];
 
 const ENCODER_DESCRIPTION: wgpu::CommandEncoderDescriptor = wgpu::CommandEncoderDescriptor {
     label: Some("Egui Encoder"),
 };
 
-pub struct MainWindow {
+pub struct EguiWindow<V: View<E>, E: RepaintableEvent> {
     window: Window,
-    event_proxy: Arc<EventProxy>,
-    task_menu: PopupMenu,
-    _notify_icon: NotifyIcon,
-    _instance: wgpu::Instance,
-    _adapter: wgpu::Adapter,
-    surface: wgpu::Surface,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    surface_config: wgpu::SurfaceConfiguration,
+    event_proxy: Arc<EventProxy<E>>,
+    surface: Surface,
+    device: Device,
+    queue: Queue,
+    surface_config: SurfaceConfiguration,
     egui_context: EguiContext,
     egui_state: EguiState,
     egui_render_pass: EguiRenderPass,
     egui_base_frame: EpiFrame,
-    application: Arc<Mutex<MainWindowApp>>,
+    view: V,
 }
 
-impl MainWindow {
-    pub async fn create(
-        event_loop: &EventLoop<UserEvent>,
-        application: Arc<Mutex<MainWindowApp>>,
-    ) -> Result<MainWindow> {
+impl<V: View<E>, E: RepaintableEvent> EguiWindow<V, E> {
+    pub async fn create(event_loop: &EventLoop<E>, mut view: V) -> Result<EguiWindow<V, E>> {
         let event_proxy = EventProxy::new(event_loop);
 
         // Create window
-        let (icon_image, w, h) = {
-            let image = image::load_from_memory(ICON_IMAGE_PNG)?;
-            let w = image.width();
-            let h = image.height();
-            let icon_image = image.to_rgba8().to_vec();
-            (icon_image, w, h)
-        };
-        let icon = Icon::from_rgba(icon_image, w, h)?;
         let window = WindowBuilder::new()
             .with_decorations(true)
             .with_resizable(true)
             .with_transparent(false)
             .with_drag_and_drop(false)
             .with_inner_size(LogicalSize::new(640, 640))
-            .with_window_icon(Some(icon))
-            .with_title(APPLICATION_TITLE)
+            .with_window_icon(view.get_icon())
+            .with_title(view.name())
             .build(event_loop)?;
-        let hwnd = HWND(window.hwnd() as _);
-        let window_id = window.id();
-
-        // Create popup menu
-        let menu_event_proxy = event_proxy.clone();
-        let task_menu = PopupMenu::new(hwnd, TASK_MENU_ITEMS, move |mid| {
-            let locked = menu_event_proxy.0.lock().expect("Poisoned");
-            locked
-                .send_event(UserEvent::MenuItem(window_id, mid))
-                .expect("EventLoop closed");
-        })?;
-
-        // Create notify icon
-        let notify_event_proxy = event_proxy.clone();
-        let notify_icon = NotifyIcon::new(
-            hwnd,
-            NOTIFY_ICON_MESSAGE_ID,
-            APPLICATION_TITLE,
-            ICON_IMAGE_PNG,
-            move |message, (x, y)| {
-                let locked = notify_event_proxy.0.lock().expect("Poisoned");
-                locked
-                    .send_event(UserEvent::NotifyIconMessage(window_id, message, x, y))
-                    .expect("EventLoop closed");
-            },
-        )?;
 
         // Create WGPU related objects
         let instance = wgpu::Instance::new(wgpu::Backends::PRIMARY);
@@ -164,19 +104,12 @@ impl MainWindow {
         });
 
         // Create application logic
-        {
-            let mut locked = application.lock().expect("Poisoned");
-            locked.attach_event_loop(event_proxy.clone());
-            locked.setup(&egui_context, &egui_base_frame, None);
-        }
+        view.attach_window(&window, event_proxy.clone());
+        view.setup(&egui_context, &egui_base_frame, None);
 
-        Ok(MainWindow {
+        Ok(EguiWindow {
             window,
             event_proxy,
-            task_menu,
-            _notify_icon: notify_icon,
-            _instance: instance,
-            _adapter: adapter,
             surface,
             device,
             queue,
@@ -185,7 +118,7 @@ impl MainWindow {
             egui_state,
             egui_render_pass,
             egui_base_frame,
-            application,
+            view,
         })
     }
 
@@ -193,16 +126,21 @@ impl MainWindow {
         self.window.id()
     }
 
-    /// Called after all events are processed.
-    pub fn after_events(&mut self) {
+    /// Should call after all events are cleared.
+    pub fn on_event_cleared(&self) {
         self.window.request_redraw();
     }
 
-    pub fn on_window_event(&mut self, event: WindowEvent) -> Option<ControlFlow> {
+    /// Sets visibility.
+    pub fn set_visibility(&self, visibility: bool) {
+        self.window.set_visible(visibility);
+    }
+
+    /// Updates UI with arrived event.
+    pub fn update_with_event(&mut self, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
                 self.window.set_visible(false);
-                None
             }
             WindowEvent::Resized(new_size) => {
                 // Resize with 0 width and height is used by winit to signal a minimize event on Windows.
@@ -213,23 +151,28 @@ impl MainWindow {
                     self.surface_config.height = new_size.height;
                     self.surface.configure(&self.device, &self.surface_config);
                 }
-                None
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                let mut frame_data = self.egui_base_frame.0.lock().expect("epi::Frame poisoned");
+                frame_data.info.native_pixels_per_point = Some(scale_factor as f32);
             }
             event => {
                 self.egui_state.on_event(&self.egui_context, &event);
-                None
             }
         }
     }
 
-    /// Called when redraw is reqested for this window.
-    pub fn on_redraw(&mut self) -> Option<ControlFlow> {
+    /// Redraws UI.
+    pub fn redraw(&mut self) -> ControlFlow {
         let output_frame = match self.surface.get_current_texture() {
             Ok(f) => f,
-            Err(wgpu::SurfaceError::Outdated) => return None,
+            Err(SurfaceError::Outdated) => {
+                // Window is minimized
+                return ControlFlow::Poll;
+            }
             Err(err) => {
                 error!("Failed to fetch texture: {err}");
-                return None;
+                return ControlFlow::Poll;
             }
         };
         let texture_view = output_frame.texture.create_view(&Default::default());
@@ -252,37 +195,9 @@ impl MainWindow {
         // Write back
         output_frame.present();
         if repainting {
-            Some(ControlFlow::Poll)
+            ControlFlow::Poll
         } else {
-            Some(ControlFlow::Wait)
-        }
-    }
-
-    pub fn on_menu_select(&self, mid: u32) {
-        match mid {
-            MENU_ID_SHOW => {
-                self.window.set_visible(true);
-            }
-            MENU_ID_EXIT => {
-                let locked = self.event_proxy.0.lock().expect("Poisoned");
-                locked
-                    .send_event(UserEvent::ExitRequested)
-                    .expect("EventLoop closed");
-            }
-            _ => (),
-        }
-    }
-
-    /// Called when related `NotifyIcon` triggered events.
-    pub fn on_notify_icon(&self, msg: u16, x: i16, y: i16) {
-        match msg as u32 {
-            WM_LBUTTONUP => {
-                self.window.set_visible(true);
-            }
-            WM_CONTEXTMENU => {
-                self.task_menu.track_at(x as i32, y as i32);
-            }
-            _ => (),
+            ControlFlow::Wait
         }
     }
 
@@ -299,9 +214,7 @@ impl MainWindow {
         frame_data.info.native_pixels_per_point = Some(scale_factor);
         drop(frame_data);
 
-        let mut application = self.application.lock().expect("Posioned");
-        application.update(&self.egui_context, &frame);
-        drop(application);
+        self.view.update(&self.egui_context, &frame);
 
         let full_output = self.egui_context.end_frame();
         let paint_jobs = self.egui_context.tessellate(full_output.shapes);

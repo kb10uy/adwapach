@@ -1,8 +1,4 @@
-use crate::{
-    main_window::{EventProxy, UserEvent},
-    model::application::Fitting,
-    windows::Monitor,
-};
+use crate::{model::application::Fitting, windows::Monitor};
 
 use std::sync::Arc;
 
@@ -24,7 +20,7 @@ struct WallpaperInfo {
     texture_handle: TextureHandle,
 }
 
-pub struct MainWindowApp {
+pub struct MainWindowViewModel {
     event_proxy: Option<Arc<EventProxy>>,
     monitors: Vec<Monitor>,
     monitor_preview_rects: Vec<Vec4<f32>>,
@@ -32,7 +28,7 @@ pub struct MainWindowApp {
     wallpapers: Vec<WallpaperInfo>,
 }
 
-impl MainWindowApp {
+impl MainWindowViewModel {
     pub fn attach_event_loop(&mut self, proxy: Arc<EventProxy>) {
         self.event_proxy = Some(proxy);
     }
@@ -96,7 +92,7 @@ impl MainWindowApp {
 }
 
 /// UI Actions
-impl MainWindowApp {
+impl MainWindowViewModel {
     /// Opens the file dialog adding image.
     pub fn add_image(&mut self, ctx: &EguiContext) -> Result<()> {
         let selected = FileDialog::new()
@@ -152,9 +148,9 @@ impl MainWindowApp {
     }
 }
 
-impl Default for MainWindowApp {
-    fn default() -> MainWindowApp {
-        MainWindowApp {
+impl Default for MainWindowViewModel {
+    fn default() -> MainWindowViewModel {
+        MainWindowViewModel {
             event_proxy: None,
             monitors: vec![],
             monitor_preview_rects: vec![],
@@ -164,7 +160,7 @@ impl Default for MainWindowApp {
     }
 }
 
-impl EpiApp for MainWindowApp {
+impl EpiApp for MainWindowViewModel {
     fn name(&self) -> &str {
         "Adwapach"
     }
@@ -241,7 +237,7 @@ impl EpiApp for MainWindowApp {
 
             ui.horizontal_wrapped(|ui| {
                 if ui.button("Add Image").clicked() {
-                    self.add_image(ui.ctx());
+                    self.add_image(ui.ctx()).ok();
                 }
             });
 
@@ -255,7 +251,7 @@ impl EpiApp for MainWindowApp {
 }
 
 /// UI Elements
-impl MainWindowApp {
+impl MainWindowViewModel {
     /// Draws monitor preview rects.
     fn ui_draw_monitor_preview(
         &self,
@@ -355,8 +351,8 @@ impl MainWindowApp {
 
                     ui.separator();
 
-                    ui.button("Move Up");
-                    ui.button("Move Down");
+                    if ui.button("Move Up").clicked() {}
+                    if ui.button("Move Down").clicked() {}
 
                     ui.separator();
 
