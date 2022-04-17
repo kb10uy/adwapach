@@ -7,31 +7,41 @@ mod windows;
 
 use crate::{
     egui::EguiWindow,
-    view::{application::ApplicationView, RepaintableEvent},
+    model::application::Application,
+    view::{application::ApplicationView, EguiEvent},
     windows::{initialize_com, Wallpaper},
 };
 
-use std::{
-    sync::{Arc, Mutex},
-    thread::sleep,
-    time::Duration,
-};
+use std::{sync::Arc, thread::sleep, time::Duration};
 
 use anyhow::Result;
-use model::application::Application;
+use flexi_logger::Logger;
+use log::error;
+use parking_lot::Mutex;
 use pollster::FutureExt as _;
-use tokio::spawn;
-use winit::{event::Event, event_loop::EventLoop};
+use tokio::{runtime::Builder, spawn};
+use winit::{
+    event::Event,
+    event_loop::{ControlFlow, EventLoop},
+};
+
+struct AsyncApplicationTask {
+    application: Arc<Mutex<Application>>,
+}
 
 fn main() -> Result<()> {
+    Logger::try_with_env()?.start()?;
+    let tokio_runtime = Builder::new_multi_thread().worker_threads(4).build()?;
+
     let event_loop = EventLoop::with_user_event();
 
-    let application_model = Application::new();
-    let application_view = ApplicationView::new(application_model.clone());
+    let application = Application::new();
+    let application_view = ApplicationView::new(application.clone())?;
     let mut application_window = EguiWindow::create(&event_loop, application_view).block_on()?;
 
-    // Run business logic thread
-    spawn(run_application_task(application_model));
+    // Run async tasks
+    let task = AsyncApplicationTask { application };
+    tokio_runtime.spawn(async_main(task));
 
     // Run UI thread
     event_loop.run(move |event, _, control_flow| match event {
@@ -42,17 +52,26 @@ fn main() -> Result<()> {
         }
         Event::RedrawRequested(window_id) => {
             if window_id == application_window.window_id() {
-                application_window.redraw();
+                match application_window.redraw() {
+                    Ok(f) => {
+                        *control_flow = f;
+                    }
+                    Err(e) => {
+                        error!("Redraw error: {}", e);
+                    }
+                }
             }
         }
         Event::MainEventsCleared => {
-            application_window.redraw();
+            application_window.on_event_cleared();
         }
         Event::UserEvent(ue) => {
-            if ue.should_repaint() {
-                *control_flow = application_window.redraw();
+            if ue.should_exit() {
+                *control_flow = ControlFlow::Exit;
             }
-
+            if ue.should_repaint() {
+                application_window.on_event_cleared();
+            }
             if let Some((window_id, visible)) = ue.should_change_window() {
                 if window_id == application_window.window_id() {
                     application_window.set_visibility(visible);
@@ -63,13 +82,22 @@ fn main() -> Result<()> {
     });
 }
 
-async fn run_application_task(main_app: Arc<Mutex<Application>>) -> Result<()> {
+async fn async_main(task: AsyncApplicationTask) -> Result<()> {
+    spawn(run_application_task(task.application));
+
+    Ok(())
+}
+
+async fn run_application_task(application: Arc<Mutex<Application>>) -> Result<()> {
     initialize_com()?;
 
-    let wallpaper = Wallpaper::new()?;
-    let monitors = wallpaper.monitors()?;
+    let monitors = {
+        let wallpaper = Wallpaper::new()?;
+        wallpaper.monitors()?
+    };
+
     {
-        let mut locked = main_app.lock().expect("Poisoned");
+        let mut locked = application.lock();
         locked.set_monitors(monitors);
     }
 

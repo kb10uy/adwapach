@@ -3,8 +3,9 @@ use crate::{
     windows::Monitor,
 };
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -89,23 +90,34 @@ impl Application {
         self.subscribers.notify(ApplicationEvent::MonitorsUpdated);
     }
 
+    /// Pushes new wallpaper.
     pub fn add_wallpaper(&mut self, wallpaper: Wallpaper) {
         self.wallpapers.push(wallpaper);
         self.subscribers.notify(ApplicationEvent::WallpapersUpdated);
+    }
+
+    /// Refers monitors.
+    pub fn monitors(&self) -> &[Monitor] {
+        &self.monitors
+    }
+
+    /// Refers wallpapers.
+    pub fn wallpapers(&self) -> &[Wallpaper] {
+        &self.wallpapers
     }
 }
 
 impl Observable for Application {
     type Message = ApplicationEvent;
 
-    fn subscribe<S>(&self, subscription: S) -> Subscription<ApplicationEvent>
+    fn subscribe<S>(&mut self, subscription: S) -> Subscription<ApplicationEvent>
     where
         S: Fn(ApplicationEvent) + Send + Sync + 'static,
     {
         self.subscribers.subscribe(subscription)
     }
 
-    fn notify(&self, message: ApplicationEvent) {
+    fn notify(&mut self, message: ApplicationEvent) {
         self.subscribers.notify(message);
     }
 }

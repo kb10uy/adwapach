@@ -31,12 +31,15 @@ pub struct PopupMenu {
     proxy_ptr: NonNull<SubclassProxy>,
 }
 
+unsafe impl Send for PopupMenu {}
+unsafe impl Sync for PopupMenu {}
+
 impl PopupMenu {
     /// Constructs new menu.
     pub fn new(
         hwnd: HWND,
         items: &[MenuItem],
-        on_menu_select: impl Fn(u32) + 'static,
+        on_menu_select: impl Fn(u32) + Send + Sync + 'static,
     ) -> Result<PopupMenu> {
         // Create proxy
         let target_menu_ids: Vec<_> = items.iter().map(|mi| mi.1).collect();

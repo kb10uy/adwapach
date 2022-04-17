@@ -24,11 +24,13 @@ pub fn initialize_com() -> Result<()> {
 }
 
 /// Proxies subclass window procedure to Rust objects.
-pub struct SubclassProxy(Box<dyn Fn(HWND, u32, WPARAM, LPARAM) -> bool + 'static>);
+pub struct SubclassProxy(Box<dyn Fn(HWND, u32, WPARAM, LPARAM) -> bool + Send + Sync + 'static>);
 
 impl SubclassProxy {
     /// Creates new proxy.
-    pub fn new(f: impl Fn(HWND, u32, WPARAM, LPARAM) -> bool + 'static) -> SubclassProxy {
+    pub fn new(
+        f: impl Fn(HWND, u32, WPARAM, LPARAM) -> bool + Send + Sync + 'static,
+    ) -> SubclassProxy {
         SubclassProxy(Box::new(f))
     }
 }

@@ -1,4 +1,4 @@
-use crate::view::{EventProxy, RepaintableEvent, View};
+use crate::view::{EguiEvent, EventProxy, View};
 
 use std::sync::Arc;
 
@@ -10,8 +10,8 @@ use epi::{
     backend::{AppOutput, FrameData},
     Frame as EpiFrame, IntegrationInfo,
 };
-use log::error;
-use wgpu::{Device, Queue, Surface, SurfaceConfiguration, SurfaceError, TextureView};
+use parking_lot::Mutex;
+use wgpu::{Device, Queue, Surface, SurfaceConfiguration, TextureView};
 use winit::{
     dpi::LogicalSize,
     event::WindowEvent,
@@ -24,7 +24,7 @@ const ENCODER_DESCRIPTION: wgpu::CommandEncoderDescriptor = wgpu::CommandEncoder
     label: Some("Egui Encoder"),
 };
 
-pub struct EguiWindow<V: View<E>, E: RepaintableEvent> {
+pub struct EguiWindow<V: View<E>, E: EguiEvent> {
     window: Window,
     event_proxy: Arc<EventProxy<E>>,
     surface: Surface,
@@ -35,12 +35,18 @@ pub struct EguiWindow<V: View<E>, E: RepaintableEvent> {
     egui_state: EguiState,
     egui_render_pass: EguiRenderPass,
     egui_base_frame: EpiFrame,
-    view: V,
+    view: Arc<Mutex<V>>,
 }
 
-impl<V: View<E>, E: RepaintableEvent> EguiWindow<V, E> {
-    pub async fn create(event_loop: &EventLoop<E>, mut view: V) -> Result<EguiWindow<V, E>> {
-        let event_proxy = EventProxy::new(event_loop);
+impl<V: View<E>, E: EguiEvent> EguiWindow<V, E> {
+    pub async fn create(
+        event_loop: &EventLoop<E>,
+        view: Arc<Mutex<V>>,
+    ) -> Result<EguiWindow<V, E>> {
+        let (icon, name) = {
+            let view = view.lock();
+            (view.get_icon(), view.name().to_string())
+        };
 
         // Create window
         let window = WindowBuilder::new()
@@ -49,9 +55,10 @@ impl<V: View<E>, E: RepaintableEvent> EguiWindow<V, E> {
             .with_transparent(false)
             .with_drag_and_drop(false)
             .with_inner_size(LogicalSize::new(640, 640))
-            .with_window_icon(view.get_icon())
-            .with_title(view.name())
+            .with_window_icon(icon)
+            .with_title(name)
             .build(event_loop)?;
+        let event_proxy = EventProxy::new(event_loop);
 
         // Create WGPU related objects
         let instance = wgpu::Instance::new(wgpu::Backends::PRIMARY);
@@ -104,8 +111,11 @@ impl<V: View<E>, E: RepaintableEvent> EguiWindow<V, E> {
         });
 
         // Create application logic
-        view.attach_window(&window, event_proxy.clone());
-        view.setup(&egui_context, &egui_base_frame, None);
+        {
+            let mut view = view.lock();
+            view.attach_window(&window, event_proxy.clone());
+            view.setup(&egui_context, &egui_base_frame, None);
+        }
 
         Ok(EguiWindow {
             window,
@@ -140,7 +150,7 @@ impl<V: View<E>, E: RepaintableEvent> EguiWindow<V, E> {
     pub fn update_with_event(&mut self, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
-                self.window.set_visible(false);
+                self.event_proxy.request_hide(self.window.id());
             }
             WindowEvent::Resized(new_size) => {
                 // Resize with 0 width and height is used by winit to signal a minimize event on Windows.
@@ -153,8 +163,8 @@ impl<V: View<E>, E: RepaintableEvent> EguiWindow<V, E> {
                 }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                let mut frame_data = self.egui_base_frame.0.lock().expect("epi::Frame poisoned");
-                frame_data.info.native_pixels_per_point = Some(scale_factor as f32);
+                let mut locked = self.egui_base_frame.0.lock().expect("Poisoned");
+                locked.info.native_pixels_per_point = Some(scale_factor as f32);
             }
             event => {
                 self.egui_state.on_event(&self.egui_context, &event);
@@ -163,24 +173,13 @@ impl<V: View<E>, E: RepaintableEvent> EguiWindow<V, E> {
     }
 
     /// Redraws UI.
-    pub fn redraw(&mut self) -> ControlFlow {
-        let output_frame = match self.surface.get_current_texture() {
-            Ok(f) => f,
-            Err(SurfaceError::Outdated) => {
-                // Window is minimized
-                return ControlFlow::Poll;
-            }
-            Err(err) => {
-                error!("Failed to fetch texture: {err}");
-                return ControlFlow::Poll;
-            }
-        };
+    pub fn redraw(&mut self) -> Result<ControlFlow> {
+        let output_frame = self.surface.get_current_texture()?;
         let texture_view = output_frame.texture.create_view(&Default::default());
 
         // Update view
         let input = self.egui_state.take_egui_input(&self.window);
-        let (commands, textures_delta, repainting) =
-            self.draw_egui(input, self.window.scale_factor() as f32);
+        let (commands, textures_delta, repainting) = self.draw_egui(input);
 
         let screen_descriptor = ScreenDescriptor {
             physical_width: self.surface_config.width,
@@ -189,34 +188,29 @@ impl<V: View<E>, E: RepaintableEvent> EguiWindow<V, E> {
         };
 
         // Transfer to GPU
-        self.update_gpu_state(&screen_descriptor, &commands, textures_delta);
-        self.transfer_to_gpu(&texture_view, &commands, &screen_descriptor);
+        self.update_gpu_state(&screen_descriptor, &commands, textures_delta)?;
+        self.transfer_to_gpu(&texture_view, &commands, &screen_descriptor)?;
 
         // Write back
         output_frame.present();
         if repainting {
-            ControlFlow::Poll
+            Ok(ControlFlow::Poll)
         } else {
-            ControlFlow::Wait
+            Ok(ControlFlow::Wait)
         }
     }
 
     /// Repaint egui.
-    fn draw_egui(
-        &mut self,
-        input: RawInput,
-        scale_factor: f32,
-    ) -> (Vec<ClippedMesh>, TexturesDelta, bool) {
-        self.egui_context.begin_frame(input);
+    fn draw_egui(&mut self, input: RawInput) -> (Vec<ClippedMesh>, TexturesDelta, bool) {
+        let full_output = {
+            self.egui_context.begin_frame(input);
 
-        let frame = self.egui_base_frame.clone();
-        let mut frame_data = frame.0.lock().expect("Posioned");
-        frame_data.info.native_pixels_per_point = Some(scale_factor);
-        drop(frame_data);
+            let mut locked = self.view.lock();
+            let frame = self.egui_base_frame.clone();
+            locked.update(&self.egui_context, &frame);
 
-        self.view.update(&self.egui_context, &frame);
-
-        let full_output = self.egui_context.end_frame();
+            self.egui_context.end_frame()
+        };
         let paint_jobs = self.egui_context.tessellate(full_output.shapes);
         (
             paint_jobs,
@@ -231,15 +225,14 @@ impl<V: View<E>, E: RepaintableEvent> EguiWindow<V, E> {
         descriptor: &ScreenDescriptor,
         commands: &[ClippedMesh],
         textures_delta: TexturesDelta,
-    ) {
+    ) -> Result<()> {
         self.egui_render_pass
-            .add_textures(&self.device, &self.queue, &textures_delta)
-            .unwrap();
-        self.egui_render_pass
-            .remove_textures(textures_delta)
-            .unwrap();
+            .add_textures(&self.device, &self.queue, &textures_delta)?;
+        self.egui_render_pass.remove_textures(textures_delta)?;
         self.egui_render_pass
             .update_buffers(&self.device, &self.queue, commands, descriptor);
+
+        Ok(())
     }
 
     /// Sends commands to queue.
@@ -248,17 +241,17 @@ impl<V: View<E>, E: RepaintableEvent> EguiWindow<V, E> {
         texture_view: &TextureView,
         commands: &[ClippedMesh],
         screen_descriptor: &ScreenDescriptor,
-    ) {
+    ) -> Result<()> {
         let mut encoder = self.device.create_command_encoder(&ENCODER_DESCRIPTION);
-        self.egui_render_pass
-            .execute(
-                &mut encoder,
-                texture_view,
-                commands,
-                screen_descriptor,
-                Some(wgpu::Color::BLACK),
-            )
-            .unwrap();
+        self.egui_render_pass.execute(
+            &mut encoder,
+            texture_view,
+            commands,
+            screen_descriptor,
+            Some(wgpu::Color::BLACK),
+        )?;
         self.queue.submit([encoder.finish()]);
+
+        Ok(())
     }
 }

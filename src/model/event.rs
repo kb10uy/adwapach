@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
 
 /// Subscription held by Observable and Subscriber.
 pub struct Subscription<M>(Arc<dyn Fn(M) + Send + Sync + 'static>);
@@ -23,55 +23,45 @@ pub trait Observable {
     type Message: Clone + Send + Sync + 'static;
 
     /// Subscribes this object.
-    fn subscribe<S>(&self, subscription: S) -> Subscription<Self::Message>
+    /// Subscriber closure **must NOT** lock the observable object itself in the current thread, or it will end up to recursive lock.
+    fn subscribe<S>(&mut self, subscription: S) -> Subscription<Self::Message>
     where
         S: Fn(Self::Message) + Send + Sync + 'static;
 
     /// Notifies a message to subscribers.
-    fn notify(&self, message: Self::Message);
+    fn notify(&mut self, message: Self::Message);
 }
 
 /// Stores and manages subscriptions.
-pub struct EventManager<M>(Arc<Mutex<Vec<WeakSubscription<M>>>>);
+pub struct EventManager<M>(Vec<WeakSubscription<M>>);
 
 impl<M: Clone + Send + Sync + 'static> EventManager<M> {
     /// Allocates new manager.
     pub fn new() -> EventManager<M> {
-        EventManager(Arc::new(Mutex::new(vec![])))
+        EventManager(vec![])
     }
 
     /// Subscribes this manager.
-    pub fn subscribe<S>(&self, subscription: S) -> Subscription<M>
+    pub fn subscribe<S>(&mut self, subscription: S) -> Subscription<M>
     where
         S: Fn(M) + Send + Sync + 'static,
     {
         let subscription: Arc<dyn Fn(M) + Send + Sync + 'static> = Arc::new(subscription);
         let weak_subscription = WeakSubscription(Arc::downgrade(&subscription));
-
-        let mut locked = self.0.lock().expect("EventManager was poisoned");
-        locked.push(weak_subscription);
+        self.0.push(weak_subscription);
 
         Subscription(subscription)
     }
 
     /// Notifies a message to all subscribers.
-    pub fn notify(&self, message: M) {
-        let mut locked = self.0.lock().expect("EventManager was poisoned");
-
-        let mut some_invalid = false;
-        for subscription in locked.iter() {
-            match subscription.0.upgrade() {
-                Some(s) => {
-                    s(message.clone());
-                }
-                None => {
-                    some_invalid = true;
-                }
-            }
+    pub fn notify(&mut self, message: M) {
+        let mut valid_all = true;
+        for subscription in &self.0 {
+            valid_all &= subscription.notify(message.clone());
         }
 
-        if some_invalid {
-            locked.retain(|s| s.0.upgrade().is_some());
+        if !valid_all {
+            self.0.retain(|s| s.0.upgrade().is_some());
         }
     }
 }

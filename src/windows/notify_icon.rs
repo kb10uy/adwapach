@@ -25,8 +25,11 @@ pub struct NotifyIcon {
     proxy_ptr: NonNull<SubclassProxy>,
 }
 
+unsafe impl Send for NotifyIcon {}
+unsafe impl Sync for NotifyIcon {}
+
 impl NotifyIcon {
-    pub fn new<F: Fn(u16, (i16, i16)) + 'static>(
+    pub fn new<F: Fn(u16, (i16, i16)) + Send + Sync + 'static>(
         hwnd: HWND,
         callback_id: u32,
         tooltip: &str,
