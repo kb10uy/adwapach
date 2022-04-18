@@ -559,7 +559,9 @@ impl ApplicationView {
                 });
 
             if response.double_clicked() {
-                println!("double-click {i}");
+                let selected = self.selected_monitor_index.expect("Should have monitor");
+                let model = self.model.clone();
+                spawn_blocking(move || ApplicationView::action_set_wallpaper(model, selected, i));
             }
         }
     }
@@ -592,6 +594,22 @@ impl ApplicationView {
     ) {
         let mut locked = model.lock();
         locked.update_wallpaper(index, op);
+    }
+
+    /// Sets selected wallpaper.
+    fn action_set_wallpaper(
+        model: Arc<Mutex<Application>>,
+        monitor_index: usize,
+        wallpaper_index: usize,
+    ) {
+        info!("Changing wallpaper: Monitor #{monitor_index}: Wallpaper #{wallpaper_index}");
+        let locked = model.lock();
+        match locked.apply_wallpaper_for_monitor(monitor_index, wallpaper_index) {
+            Ok(()) => (),
+            Err(e) => {
+                error!("Failed to set wallpaper: {e}");
+            }
+        }
     }
 }
 

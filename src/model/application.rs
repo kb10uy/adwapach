@@ -1,10 +1,11 @@
 use crate::{
     model::{EventManager, Observable, Subscription},
-    windows::Monitor,
+    windows::{Monitor, WallpaperInterface},
 };
 
 use std::sync::Arc;
 
+use anyhow::Result;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -84,6 +85,16 @@ impl Application {
         }))
     }
 
+    /// Refers monitors.
+    pub fn monitors(&self) -> &[Monitor] {
+        &self.monitors
+    }
+
+    /// Refers wallpapers.
+    pub fn wallpapers(&self) -> &[Wallpaper] {
+        &self.wallpapers
+    }
+
     /// Sets monitors information.
     pub fn set_monitors(&mut self, monitors: Vec<Monitor>) {
         self.monitors = monitors;
@@ -116,14 +127,18 @@ impl Application {
         self.subscribers.notify(ApplicationEvent::WallpapersUpdated);
     }
 
-    /// Refers monitors.
-    pub fn monitors(&self) -> &[Monitor] {
-        &self.monitors
-    }
-
-    /// Refers wallpapers.
-    pub fn wallpapers(&self) -> &[Wallpaper] {
-        &self.wallpapers
+    /// Applies selected wallpaper for selected monitor.
+    pub fn apply_wallpaper_for_monitor(
+        &self,
+        monitor_index: usize,
+        wallpaper_index: usize,
+    ) -> Result<()> {
+        let wpi = WallpaperInterface::new()?;
+        wpi.set_wallpaper(
+            self.monitors[monitor_index].id(),
+            &self.wallpapers[wallpaper_index].filename,
+        )?;
+        Ok(())
     }
 }
 

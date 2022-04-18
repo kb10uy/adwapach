@@ -1,8 +1,12 @@
 //! Provides desktop wallpaper manipulation.
 
 use std::{
-    collections::HashMap, ffi::OsString, mem::size_of, os::windows::prelude::OsStringExt,
-    ptr::null, slice::from_raw_parts,
+    collections::HashMap,
+    ffi::OsString,
+    mem::size_of,
+    os::windows::prelude::{OsStrExt, OsStringExt},
+    ptr::null,
+    slice::from_raw_parts,
 };
 
 use anyhow::{Context, Result};
@@ -77,19 +81,19 @@ impl Monitor {
 
 /// Provides wallpaper manipulations.
 #[derive(Debug)]
-pub struct Wallpaper {
+pub struct WallpaperInterface {
     interface: IDesktopWallpaper,
 }
 
-impl Wallpaper {
+impl WallpaperInterface {
     /// Initializes `IDesktopWallpaper` internally.
-    pub fn new() -> Result<Wallpaper> {
+    pub fn new() -> Result<WallpaperInterface> {
         let interface: IDesktopWallpaper = unsafe {
             CoCreateInstance(&DesktopWallpaper, None, CLSCTX_ALL)
                 .context("Failed to initialize IDesktopWallper")?
         };
 
-        Ok(Wallpaper { interface })
+        Ok(WallpaperInterface { interface })
     }
 
     /// Fetches connected monitors information.
@@ -130,6 +134,21 @@ impl Wallpaper {
         }
 
         Ok(monitors)
+    }
+
+    /// Sets wallpaper for monitor.
+    pub fn set_wallpaper(
+        &self,
+        monitor_id: &MonitorId,
+        wallpaper: impl Into<OsString>,
+    ) -> Result<()> {
+        let mut path: Vec<u16> = wallpaper.into().encode_wide().collect();
+        path.push(0);
+        unsafe {
+            self.interface
+                .SetWallpaper(monitor_id.as_pcwstr(), PCWSTR(path.as_ptr()))?;
+        }
+        Ok(())
     }
 
     /// Lists available monitor Ids.

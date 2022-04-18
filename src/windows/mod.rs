@@ -16,7 +16,7 @@ use windows::Win32::{
 
 pub use self::notify_icon::NotifyIcon;
 pub use self::popup_menu::{MenuItem, PopupMenu};
-pub use self::wallpaper::{Monitor, Wallpaper};
+pub use self::wallpaper::{Monitor, WallpaperInterface};
 
 /// Initializes COM.
 pub fn initialize_com(multi_threaded: bool) -> Result<()> {

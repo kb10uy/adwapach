@@ -114,11 +114,11 @@ impl<V: View<E>, E: EguiEvent> EguiWindow<V, E> {
         });
 
         // Create application logic
-        runtime.block_on(async {
+        {
             let mut view = view.lock();
             view.attach_window(&window, event_proxy.clone());
             view.setup(&egui_context, &egui_base_frame, None);
-        });
+        }
 
         Ok(EguiWindow {
             runtime,
