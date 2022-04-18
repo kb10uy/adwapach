@@ -11,6 +11,7 @@ use epi::{
     Frame as EpiFrame, IntegrationInfo,
 };
 use parking_lot::Mutex;
+use tokio::runtime::Runtime;
 use wgpu::{Device, Queue, Surface, SurfaceConfiguration, TextureView};
 use winit::{
     dpi::LogicalSize,
@@ -25,6 +26,7 @@ const ENCODER_DESCRIPTION: wgpu::CommandEncoderDescriptor = wgpu::CommandEncoder
 };
 
 pub struct EguiWindow<V: View<E>, E: EguiEvent> {
+    runtime: Arc<Runtime>,
     window: Window,
     event_proxy: Arc<EventProxy<E>>,
     surface: Surface,
@@ -41,6 +43,7 @@ pub struct EguiWindow<V: View<E>, E: EguiEvent> {
 impl<V: View<E>, E: EguiEvent> EguiWindow<V, E> {
     pub async fn create(
         event_loop: &EventLoop<E>,
+        runtime: Arc<Runtime>,
         view: Arc<Mutex<V>>,
     ) -> Result<EguiWindow<V, E>> {
         let (icon, name) = {
@@ -111,13 +114,14 @@ impl<V: View<E>, E: EguiEvent> EguiWindow<V, E> {
         });
 
         // Create application logic
-        {
+        runtime.block_on(async {
             let mut view = view.lock();
             view.attach_window(&window, event_proxy.clone());
             view.setup(&egui_context, &egui_base_frame, None);
-        }
+        });
 
         Ok(EguiWindow {
+            runtime,
             window,
             event_proxy,
             surface,
@@ -205,9 +209,11 @@ impl<V: View<E>, E: EguiEvent> EguiWindow<V, E> {
         let full_output = {
             self.egui_context.begin_frame(input);
 
-            let mut locked = self.view.lock();
-            let frame = self.egui_base_frame.clone();
-            locked.update(&self.egui_context, &frame);
+            self.runtime.block_on(async {
+                let mut locked = self.view.lock();
+                let frame = self.egui_base_frame.clone();
+                locked.update(&self.egui_context, &frame);
+            });
 
             self.egui_context.end_frame()
         };

@@ -96,6 +96,26 @@ impl Application {
         self.subscribers.notify(ApplicationEvent::WallpapersUpdated);
     }
 
+    /// Performs an operation for specified indexed item.
+    pub fn update_wallpaper(&mut self, index: usize, op: WallpaperListOperation) {
+        match op {
+            WallpaperListOperation::Remove => {
+                self.wallpapers.remove(index);
+            }
+            WallpaperListOperation::MoveUp if index > 0 => {
+                self.wallpapers.swap(index, index - 1);
+            }
+            WallpaperListOperation::MoveDown if index + 1 < self.wallpapers.len() => {
+                self.wallpapers.swap(index, index + 1);
+            }
+            WallpaperListOperation::SetFitting(f) => {
+                self.wallpapers[index].set_fitting(f);
+            }
+            _ => (),
+        }
+        self.subscribers.notify(ApplicationEvent::WallpapersUpdated);
+    }
+
     /// Refers monitors.
     pub fn monitors(&self) -> &[Monitor] {
         &self.monitors
@@ -120,6 +140,22 @@ impl Observable for Application {
     fn notify(&mut self, message: ApplicationEvent) {
         self.subscribers.notify(message);
     }
+}
+
+/// Represents an action for wallpapers list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WallpaperListOperation {
+    /// Removes this item.
+    Remove,
+
+    /// Moves it up.
+    MoveUp,
+
+    /// Moves it down.
+    MoveDown,
+
+    /// Sets new `Fitting` for this.
+    SetFitting(Fitting),
 }
 
 /// Represents an event in `Application`.

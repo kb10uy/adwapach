@@ -7,7 +7,10 @@ use std::ptr::null;
 use anyhow::Result;
 use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
-    System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED},
+    System::Com::{
+        CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
+        COINIT_MULTITHREADED,
+    },
     UI::Shell::DefSubclassProc,
 };
 
@@ -16,11 +19,22 @@ pub use self::popup_menu::{MenuItem, PopupMenu};
 pub use self::wallpaper::{Monitor, Wallpaper};
 
 /// Initializes COM.
-pub fn initialize_com() -> Result<()> {
+pub fn initialize_com(multi_threaded: bool) -> Result<()> {
     unsafe {
-        CoInitializeEx(null(), COINIT_APARTMENTTHREADED)?;
+        if multi_threaded {
+            CoInitializeEx(null(), COINIT_MULTITHREADED | COINIT_DISABLE_OLE1DDE)?;
+        } else {
+            CoInitializeEx(null(), COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)?;
+        }
     }
     Ok(())
+}
+
+/// Uninitializes COM.
+pub fn terminate_com() {
+    unsafe {
+        CoUninitialize();
+    }
 }
 
 /// Proxies subclass window procedure to Rust objects.

@@ -1,6 +1,6 @@
 use crate::{
     model::{
-        application::{Application, ApplicationEvent, Fitting, Wallpaper},
+        application::{Application, ApplicationEvent, Fitting, Wallpaper, WallpaperListOperation},
         Observable, Subscription,
     },
     view::{EguiEvent, EventProxy, View},
@@ -23,10 +23,7 @@ use image::{imageops::FilterType, DynamicImage, ImageBuffer};
 use log::{error, info};
 use native_dialog::FileDialog;
 use parking_lot::Mutex;
-use tokio::{
-    runtime::{Builder, Runtime},
-    task::spawn_blocking,
-};
+use tokio::task::spawn_blocking;
 use uuid::Uuid;
 use vek::{Vec2, Vec4};
 use windows::Win32::{
@@ -52,7 +49,6 @@ const TASK_MENU_ITEMS: &[MenuItem] = &[
 
 /// Main application view.
 pub struct ApplicationView {
-    tokio: Runtime,
     model: Arc<Mutex<Application>>,
     subscription: Option<Subscription<ApplicationEvent>>,
     event_proxy: Option<Arc<EventProxy<ApplicationViewEvent>>>,
@@ -69,7 +65,6 @@ pub struct ApplicationView {
 impl ApplicationView {
     pub fn new(model: Arc<Mutex<Application>>) -> Result<Arc<Mutex<ApplicationView>>> {
         let view = Arc::new(Mutex::new(ApplicationView {
-            tokio: Builder::new_multi_thread().worker_threads(2).build()?,
             model: model.clone(),
             subscription: None,
             event_proxy: None,
@@ -380,8 +375,7 @@ impl App for ApplicationView {
             ui.horizontal_wrapped(|ui| {
                 if ui.button("Add Image").clicked() {
                     let model = self.model.clone();
-                    self.tokio
-                        .spawn_blocking(|| ApplicationView::action_add_image(model));
+                    spawn_blocking(|| ApplicationView::action_add_image(model));
                 }
             });
 
@@ -505,24 +499,61 @@ impl ApplicationView {
                     Sense::click(),
                 )
                 .context_menu(|ui| {
-                    /*
+                    let mut selected_fitting = wallpaper.fitting;
                     ui.menu_button("Change Fitting", |ui| {
-                        ui.selectable_value(&mut info.fitting, Fitting::Cover, "Cover");
-                        ui.selectable_value(&mut info.fitting, Fitting::Contain, "Contain");
-                        ui.selectable_value(&mut info.fitting, Fitting::Tile, "Tile");
-                        ui.selectable_value(&mut info.fitting, Fitting::Center, "Center");
+                        ui.selectable_value(&mut selected_fitting, Fitting::Cover, "Cover");
+                        ui.selectable_value(&mut selected_fitting, Fitting::Contain, "Contain");
+                        ui.selectable_value(&mut selected_fitting, Fitting::Tile, "Tile");
+                        ui.selectable_value(&mut selected_fitting, Fitting::Center, "Center");
                     });
-                    */
+                    if selected_fitting != wallpaper.fitting {
+                        let model = self.model.clone();
+                        spawn_blocking(move || {
+                            ApplicationView::action_perform_wallpaper(
+                                model,
+                                i,
+                                WallpaperListOperation::SetFitting(selected_fitting),
+                            )
+                        });
+                        ui.close_menu();
+                    }
 
                     ui.separator();
 
-                    if ui.button("Move Up").clicked() {}
-                    if ui.button("Move Down").clicked() {}
+                    if ui.button("Move Up").clicked() {
+                        let model = self.model.clone();
+                        spawn_blocking(move || {
+                            ApplicationView::action_perform_wallpaper(
+                                model,
+                                i,
+                                WallpaperListOperation::MoveUp,
+                            )
+                        });
+                        ui.close_menu();
+                    }
+                    if ui.button("Move Down").clicked() {
+                        let model = self.model.clone();
+                        spawn_blocking(move || {
+                            ApplicationView::action_perform_wallpaper(
+                                model,
+                                i,
+                                WallpaperListOperation::MoveDown,
+                            )
+                        });
+                        ui.close_menu();
+                    }
 
                     ui.separator();
 
                     if ui.button("Remove").clicked() {
-                        // TODO: Remove this item
+                        let model = self.model.clone();
+                        spawn_blocking(move || {
+                            ApplicationView::action_perform_wallpaper(
+                                model,
+                                i,
+                                WallpaperListOperation::Remove,
+                            )
+                        });
                         ui.close_menu();
                     }
                 });
@@ -551,6 +582,16 @@ impl ApplicationView {
         locked.add_wallpaper(Wallpaper::new(path.to_string_lossy(), Fitting::Cover));
 
         Ok(())
+    }
+
+    /// Performs wallpapers list operation.
+    fn action_perform_wallpaper(
+        model: Arc<Mutex<Application>>,
+        index: usize,
+        op: WallpaperListOperation,
+    ) {
+        let mut locked = model.lock();
+        locked.update_wallpaper(index, op);
     }
 }
 

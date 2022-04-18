@@ -1,47 +1,46 @@
 #![cfg_attr(production, windows_subsystem = "windows")]
 
+mod background;
 mod egui;
 mod model;
 mod view;
 mod windows;
 
 use crate::{
+    background::load_monitor_info,
     egui::EguiWindow,
     model::application::Application,
     view::{application::ApplicationView, EguiEvent},
-    windows::{initialize_com, Wallpaper},
+    windows::{initialize_com, terminate_com},
 };
 
-use std::{sync::Arc, thread::sleep, time::Duration};
+use std::sync::Arc;
 
 use anyhow::Result;
 use flexi_logger::Logger;
 use log::error;
-use parking_lot::Mutex;
-use pollster::FutureExt as _;
-use tokio::{runtime::Builder, spawn};
+use tokio::runtime::{Builder, Runtime};
 use winit::{
     event::Event,
     event_loop::{ControlFlow, EventLoop},
 };
 
-struct AsyncApplicationTask {
-    application: Arc<Mutex<Application>>,
-}
-
 fn main() -> Result<()> {
     Logger::try_with_env()?.start()?;
-    let tokio_runtime = Builder::new_multi_thread().worker_threads(4).build()?;
-
     let event_loop = EventLoop::with_user_event();
+    let runtime = build_runtime()?;
+    initialize_com(false)?;
 
     let application = Application::new();
     let application_view = ApplicationView::new(application.clone())?;
-    let mut application_window = EguiWindow::create(&event_loop, application_view).block_on()?;
+    let mut application_window = runtime.block_on(EguiWindow::create(
+        &event_loop,
+        runtime.clone(),
+        application_view,
+    ))?;
 
     // Run async tasks
-    let task = AsyncApplicationTask { application };
-    tokio_runtime.spawn(async_main(task));
+    runtime.spawn(load_monitor_info(application));
 
     // Run UI thread
     event_loop.run(move |event, _, control_flow| match event {
@@ -82,26 +81,18 @@ fn main() -> Result<()> {
     });
 }
 
-async fn async_main(task: AsyncApplicationTask) -> Result<()> {
-    spawn(run_application_task(task.application));
+fn build_runtime() -> Result<Arc<Runtime>> {
+    let tokio_runtime = Builder::new_multi_thread()
+        .on_thread_start(|| match initialize_com(false) {
+            Ok(()) => (),
+            Err(e) => {
+                error!("Failed to initialize com for thread: {e}");
+            }
+        })
+        .on_thread_stop(|| {
+            terminate_com();
+        })
+        .build()?;
 
-    Ok(())
-}
-
-async fn run_application_task(application: Arc<Mutex<Application>>) -> Result<()> {
-    initialize_com()?;
-
-    let monitors = {
-        let wallpaper = Wallpaper::new()?;
-        wallpaper.monitors()?
-    };
-
-    {
-        let mut locked = application.lock();
-        locked.set_monitors(monitors);
-    }
-
-    loop {
-        sleep(Duration::from_secs(1));
-    }
+    Ok(Arc::new(tokio_runtime))
 }
