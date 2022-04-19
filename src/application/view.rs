@@ -1,10 +1,14 @@
 use crate::{
-    model::{
-        application::{Application, ApplicationEvent, Fitting, Wallpaper, WallpaperListOperation},
-        Observable, Subscription,
+    application::{
+        viewmodel::{
+            ApplicationViewModel, ApplicationViewModelEvent, MonitorCache, WallpaperCache,
+            WallpaperListOperation,
+        },
+        Fitting,
     },
-    view::{EguiEvent, EventProxy, View},
-    windows::{MenuItem, Monitor, NotifyIcon, PopupMenu},
+    egui::{EguiEvent, EventProxy, View},
+    mvvm::{Observable, Subscription},
+    windows::{MenuItem, NotifyIcon, PopupMenu},
 };
 
 use std::{
@@ -21,11 +25,10 @@ use egui::{
 use epi::{App, Frame, Storage};
 use image::{imageops::FilterType, DynamicImage, ImageBuffer};
 use log::{error, info};
-use native_dialog::FileDialog;
 use parking_lot::Mutex;
 use tokio::task::spawn_blocking;
 use uuid::Uuid;
-use vek::{Vec2, Vec4};
+use vek::Vec2;
 use windows::Win32::{
     Foundation::HWND,
     UI::WindowsAndMessaging::{WM_CONTEXTMENU, WM_LBUTTONUP},
@@ -49,34 +52,30 @@ const TASK_MENU_ITEMS: &[MenuItem] = &[
 
 /// Main application view.
 pub struct ApplicationView {
-    model: Arc<Mutex<Application>>,
-    subscription: Option<Subscription<ApplicationEvent>>,
-    event_proxy: Option<Arc<EventProxy<ApplicationViewEvent>>>,
+    subscription: Option<Subscription<ApplicationViewModelEvent>>,
+    event_proxy: Option<Arc<EventProxy<ApplicationWindowEvent>>>,
     notify_icon: Option<NotifyIcon>,
     context: Option<Context>,
 
-    monitors: Vec<MonitorView>,
+    viewmodel: Arc<Mutex<ApplicationViewModel>>,
     selected_monitor_index: Option<usize>,
-
-    wallpapers: Vec<WallpaperView>,
     wallpaper_cache: HashMap<Uuid, (TextureHandle, Vec2<u32>)>,
 }
 
 impl ApplicationView {
-    pub fn new(model: Arc<Mutex<Application>>) -> Result<Arc<Mutex<ApplicationView>>> {
+    pub fn new(viewmodel: Arc<Mutex<ApplicationViewModel>>) -> Result<Arc<Mutex<ApplicationView>>> {
         let view = Arc::new(Mutex::new(ApplicationView {
-            model: model.clone(),
             subscription: None,
             event_proxy: None,
             notify_icon: None,
             context: None,
-            monitors: vec![],
+
+            viewmodel: viewmodel.clone(),
             selected_monitor_index: None,
-            wallpapers: vec![],
             wallpaper_cache: Default::default(),
         }));
 
-        let subscription = ApplicationView::setup_subscribe(model, view.clone());
+        let subscription = ApplicationView::setup_subscribe(viewmodel, view.clone());
         {
             let mut locked = view.lock();
             locked.subscription = Some(subscription);
@@ -87,166 +86,31 @@ impl ApplicationView {
 
     /// Register the subscription for model event.
     fn setup_subscribe(
-        model: Arc<Mutex<Application>>,
+        viewmodel: Arc<Mutex<ApplicationViewModel>>,
         view: Arc<Mutex<ApplicationView>>,
-    ) -> Subscription<ApplicationEvent> {
-        let mut model = model.lock();
+    ) -> Subscription<ApplicationViewModelEvent> {
+        let mut viewmodel = viewmodel.lock();
 
-        let model_view = view.clone();
-        model.subscribe(move |e| match e {
-            ApplicationEvent::MonitorsUpdated => {
-                let view = model_view.clone();
-                spawn_blocking(|| ApplicationView::vm_update_monitors(view));
+        let viewmodel_view = view.clone();
+        viewmodel.subscribe(move |e| match e {
+            ApplicationViewModelEvent::MonitorsUpdated => {
+                let view = viewmodel_view.clone();
+                spawn_blocking(|| ApplicationView::update_monitors(view));
             }
-            ApplicationEvent::WallpapersUpdated => {
-                let view = model_view.clone();
-                spawn_blocking(|| ApplicationView::vm_reconstruct_wallpaper_cache(view));
+            ApplicationViewModelEvent::WallpapersUpdated => {
+                let view = viewmodel_view.clone();
+                spawn_blocking(|| ApplicationView::update_texture_cache(view));
             }
         })
     }
 }
 
-/// ViewModel async events.
-impl ApplicationView {
-    /// Calculates normalized monitor preview rects.
-    /// Should be called as dedicated task.
-    fn vm_update_monitors(this: Arc<Mutex<ApplicationView>>) {
-        let mut view = this.lock();
-
-        view.monitors.clear();
-        let monitors_source = {
-            let model = view.model.lock();
-            model.monitors().to_vec()
-        };
-        if monitors_source.is_empty() {
-            view.selected_monitor_index = None;
-            return;
-        }
-
-        let (x_points, y_points): (Vec<_>, Vec<_>) = monitors_source
-            .iter()
-            .flat_map(|m| {
-                let position = m.position();
-                let size = m.size();
-                [
-                    (position.x, position.y),
-                    (position.x + size.x, position.y + size.y),
-                ]
-            })
-            .unzip();
-
-        let left_all = *x_points.iter().min().expect("No monitor calculated") as f32;
-        let right_all = *x_points.iter().max().expect("No monitor calculated") as f32;
-        let top_all = *y_points.iter().min().expect("No monitor calculated") as f32;
-        let bottom_all = *y_points.iter().max().expect("No monitor calculated") as f32;
-
-        let whole_topleft = Vec2::new(left_all, top_all);
-        let whole_size = Vec2::new(right_all - left_all, bottom_all - top_all);
-        let divider = whole_size.x.max(whole_size.y);
-        let whole_offset = (Vec2::new(divider, divider) - whole_size) / 2.0;
-
-        for monitor in monitors_source {
-            view.monitors.push(MonitorView::new(
-                &monitor,
-                whole_topleft,
-                whole_offset,
-                divider,
-            ));
-        }
-
-        view.selected_monitor_index = Some(0);
-    }
-
-    /// Updates wallpaper thumbnail cache.
-    /// Should be called as dedicated task.
-    fn vm_reconstruct_wallpaper_cache(this: Arc<Mutex<ApplicationView>>) {
-        let wallpapers_source = {
-            let view = this.lock();
-            let model = view.model.lock();
-            model.wallpapers().to_vec()
-        };
-        let mut active_thumbnails = HashSet::new();
-        let mut unmet_thumbnails = vec![];
-
-        // Just push metadata
-        {
-            let mut view = this.lock();
-            view.wallpapers.clear();
-            for (i, wallpaper) in wallpapers_source.iter().enumerate() {
-                let mut wv = WallpaperView::new(&wallpaper);
-
-                match view.wallpaper_cache.get(&wallpaper.id()) {
-                    Some(cache) => {
-                        wv.size = Some(cache.1);
-                        active_thumbnails.insert(wallpaper.id());
-                    }
-                    None => {
-                        unmet_thumbnails.push((i, wallpaper.filename().to_string()));
-                    }
-                }
-                view.wallpapers.push(wv);
-            }
-        }
-
-        // Load unmet files
-        for (index, filename) in unmet_thumbnails {
-            info!("Loading {filename}");
-            let (mut resized_image, original_size) = match image::open(&filename) {
-                Ok(i) => {
-                    let size = Vec2::new(i.width(), i.height());
-                    let resized_image = i.resize(512, 512, FilterType::Gaussian);
-                    (resized_image, size)
-                }
-                Err(e) => {
-                    error!("Image load error: {e}");
-                    let placeholder = DynamicImage::ImageRgba8(ImageBuffer::new(128, 128));
-                    (placeholder, Vec2::new(0, 0))
-                }
-            };
-            let rect_size = resized_image.width().min(resized_image.height());
-            resized_image = resized_image.crop(
-                (resized_image.width() - rect_size) / 2,
-                (resized_image.height() - rect_size) / 2,
-                rect_size,
-                rect_size,
-            );
-
-            let ui_image = ColorImage::from_rgba_unmultiplied(
-                [rect_size as _, rect_size as _],
-                &resized_image.to_rgba8(),
-            );
-
-            {
-                let mut view = this.lock();
-                let texture_handle = view
-                    .context
-                    .as_ref()
-                    .expect("Should attached")
-                    .load_texture(&filename, ui_image);
-
-                let id = view.wallpapers[index].uuid;
-                view.wallpapers[index].size = Some(original_size);
-                view.wallpaper_cache
-                    .insert(id, (texture_handle, original_size));
-                active_thumbnails.insert(id);
-            }
-        }
-
-        // Delete unused
-        {
-            let mut view = this.lock();
-            view.wallpaper_cache
-                .retain(|k, _| active_thumbnails.contains(k));
-        }
-    }
-}
-
 /// View events.
-impl View<ApplicationViewEvent> for ApplicationView {
+impl View<ApplicationWindowEvent> for ApplicationView {
     fn attach_window(
         &mut self,
         window: &Window,
-        event_proxy: Arc<EventProxy<ApplicationViewEvent>>,
+        event_proxy: Arc<EventProxy<ApplicationWindowEvent>>,
     ) {
         let window_id = window.id();
         let hwnd = HWND(window.hwnd() as _);
@@ -316,6 +180,9 @@ impl App for ApplicationView {
     }
 
     fn update(&mut self, ctx: &Context, _frame: &Frame) {
+        let viewmodel_ref = self.viewmodel.clone();
+        let viewmodel = viewmodel_ref.lock();
+
         TopBottomPanel::top("top_panel").show(ctx, |ui| {
             menu::bar(ui, |ui| {
                 ui.menu_button("Application", |ui| {
@@ -333,16 +200,22 @@ impl App for ApplicationView {
             Some(i) => i,
             None => return,
         };
-        let selected_size = self.monitors[selected_index].size;
-        let selected_position = self.monitors[selected_index].position;
+        let selected_size = viewmodel.monitors[selected_index].size;
+        let selected_position = viewmodel.monitors[selected_index].position;
 
         CentralPanel::default().show(ctx, |ui| {
             // Monitor preview & selection
             ui.vertical_centered(|ui| {
-                self.ui_draw_monitor_preview(ui, 320.0, selected_index, &mut selected_index);
+                self.ui_draw_monitor_preview(
+                    ui,
+                    320.0,
+                    &viewmodel.monitors,
+                    selected_index,
+                    &mut selected_index,
+                );
             });
             ui.horizontal_wrapped(|ui| {
-                for (i, monitor) in self.monitors.iter().enumerate() {
+                for (i, monitor) in viewmodel.monitors.iter().enumerate() {
                     ui.selectable_value(&mut selected_index, i, &monitor.name);
                 }
             });
@@ -374,15 +247,15 @@ impl App for ApplicationView {
 
             ui.horizontal_wrapped(|ui| {
                 if ui.button("Add Image").clicked() {
-                    let model = self.model.clone();
-                    spawn_blocking(|| ApplicationView::action_add_image(model));
+                    let viewmodel = self.viewmodel.clone();
+                    spawn_blocking(|| ApplicationViewModel::action_add_image(viewmodel));
                 }
             });
 
             ui.add_space(0.0);
 
             ScrollArea::vertical().show(ui, |ui| {
-                self.ui_draw_image_items(ui);
+                self.ui_draw_image_items(ui, &viewmodel.wallpapers);
             });
         });
     }
@@ -395,6 +268,7 @@ impl ApplicationView {
         &self,
         ui: &mut Ui,
         size: f32,
+        monitors: &[MonitorCache],
         selected: usize,
         target: &mut usize,
     ) -> Response {
@@ -408,7 +282,7 @@ impl ApplicationView {
         let stroke_selected = Stroke::new(2.0, Color32::BLUE);
         let fill = Color32::from_white_alpha(32);
 
-        for (i, monitor) in self.monitors.iter().enumerate() {
+        for (i, monitor) in monitors.iter().enumerate() {
             let mlt = UiPos2::new(
                 monitor.preview_rect.x * multiplier + 2.0,
                 monitor.preview_rect.y * multiplier + 2.0,
@@ -441,7 +315,7 @@ impl ApplicationView {
     }
 
     /// Draw an item of wallpaper image list.
-    fn ui_draw_image_items(&mut self, ui: &mut Ui) {
+    fn ui_draw_image_items(&mut self, ui: &mut Ui, wallpapers: &[WallpaperCache]) {
         let left_center_layout =
             Layout::centered_and_justified(Direction::TopDown).with_cross_align(Align::LEFT);
         let head_style = TextFormat {
@@ -455,12 +329,15 @@ impl ApplicationView {
         };
         let thumbnail_size = UiVec2::splat(100.0);
 
-        for (i, wallpaper) in self.wallpapers.iter().enumerate() {
-            let thumbnail = self.wallpaper_cache.get(&wallpaper.uuid);
+        for (i, wallpaper) in wallpapers.iter().enumerate() {
+            let (thumbnail, size_text) = match self.wallpaper_cache.get(&wallpaper.uuid) {
+                Some((t, s)) => (Some(t), format!("Size: {}x{}\n", s.x, s.y)),
+                None => (None, "Size: Unknown\n".into()),
+            };
 
             let inner_response = ui.horizontal(|ui| {
                 match thumbnail {
-                    Some((t, _)) => {
+                    Some(t) => {
                         ui.image(t.id(), thumbnail_size);
                     }
                     None => {
@@ -475,14 +352,7 @@ impl ApplicationView {
                         0.0,
                         head_style.clone(),
                     );
-                    match wallpaper.size {
-                        Some(size) => text.append(
-                            &format!("Size: {}x{}\n", size.x, size.y),
-                            0.0,
-                            prop_style.clone(),
-                        ),
-                        None => text.append("Size: Unknown\n", 0.0, prop_style.clone()),
-                    }
+                    text.append(&size_text, 0.0, prop_style.clone());
                     text.append(
                         &format!("Fitting: {:?}", wallpaper.fitting),
                         0.0,
@@ -507,10 +377,10 @@ impl ApplicationView {
                         ui.selectable_value(&mut selected_fitting, Fitting::Center, "Center");
                     });
                     if selected_fitting != wallpaper.fitting {
-                        let model = self.model.clone();
+                        let viewmodel = self.viewmodel.clone();
                         spawn_blocking(move || {
-                            ApplicationView::action_perform_wallpaper(
-                                model,
+                            ApplicationViewModel::action_perform_wallpaper(
+                                viewmodel,
                                 i,
                                 WallpaperListOperation::SetFitting(selected_fitting),
                             )
@@ -521,10 +391,10 @@ impl ApplicationView {
                     ui.separator();
 
                     if ui.button("Move Up").clicked() {
-                        let model = self.model.clone();
+                        let viewmodel = self.viewmodel.clone();
                         spawn_blocking(move || {
-                            ApplicationView::action_perform_wallpaper(
-                                model,
+                            ApplicationViewModel::action_perform_wallpaper(
+                                viewmodel,
                                 i,
                                 WallpaperListOperation::MoveUp,
                             )
@@ -532,10 +402,10 @@ impl ApplicationView {
                         ui.close_menu();
                     }
                     if ui.button("Move Down").clicked() {
-                        let model = self.model.clone();
+                        let viewmodel = self.viewmodel.clone();
                         spawn_blocking(move || {
-                            ApplicationView::action_perform_wallpaper(
-                                model,
+                            ApplicationViewModel::action_perform_wallpaper(
+                                viewmodel,
                                 i,
                                 WallpaperListOperation::MoveDown,
                             )
@@ -546,10 +416,10 @@ impl ApplicationView {
                     ui.separator();
 
                     if ui.button("Remove").clicked() {
-                        let model = self.model.clone();
+                        let viewmodel = self.viewmodel.clone();
                         spawn_blocking(move || {
-                            ApplicationView::action_perform_wallpaper(
-                                model,
+                            ApplicationViewModel::action_perform_wallpaper(
+                                viewmodel,
                                 i,
                                 WallpaperListOperation::Remove,
                             )
@@ -560,8 +430,10 @@ impl ApplicationView {
 
             if response.double_clicked() {
                 let selected = self.selected_monitor_index.expect("Should have monitor");
-                let model = self.model.clone();
-                spawn_blocking(move || ApplicationView::action_set_wallpaper(model, selected, i));
+                let model = self.viewmodel.clone();
+                spawn_blocking(move || {
+                    ApplicationViewModel::action_set_wallpaper(model, selected, i)
+                });
             }
         }
     }
@@ -569,131 +441,110 @@ impl ApplicationView {
 
 /// UI Actions.
 impl ApplicationView {
-    /// Opens file selection dialog.
-    fn action_add_image(model: Arc<Mutex<Application>>) -> Result<()> {
-        let selected = FileDialog::new()
-            .add_filter("Supported Image Files", &["jpg", "jpeg", "png", "bmp"])
-            .show_open_single_file()
-            .expect("Invalid file open dialog");
-        let path = match selected {
-            Some(p) => p,
-            None => return Ok(()),
+    /// Updates thumbnail and wallpaper size cache.
+    fn update_texture_cache(this: Arc<Mutex<ApplicationView>>) -> Result<()> {
+        let (mut active_files, unmet_files, ctx) = {
+            let view = this.lock();
+            let viewmodel = view.viewmodel.lock();
+            let ctx = view
+                .context
+                .as_ref()
+                .expect("Context must be attached")
+                .clone();
+
+            let mut unmet_files = HashMap::new();
+            let mut active_files = HashSet::new();
+            for wallpaper in &viewmodel.wallpapers {
+                if !view.wallpaper_cache.contains_key(&wallpaper.uuid) {
+                    unmet_files.insert(wallpaper.uuid, wallpaper.filename.clone());
+                }
+                active_files.insert(wallpaper.uuid);
+            }
+            (active_files, unmet_files, ctx)
         };
 
-        let mut locked = model.lock();
-        locked.add_wallpaper(Wallpaper::new(path.to_string_lossy(), Fitting::Cover));
+        // Load unmet files
+        let mut newly_loaded = HashMap::new();
+        for (wallpaper_id, filename) in unmet_files {
+            info!("Loading {filename}");
+            let (mut resized_image, original_size) = match image::open(&filename) {
+                Ok(i) => {
+                    let size = Vec2::new(i.width(), i.height());
+                    let resized_image = i.resize(512, 512, FilterType::Gaussian);
+                    (resized_image, size)
+                }
+                Err(e) => {
+                    error!("Image load error: {e}");
+                    let placeholder = DynamicImage::ImageRgba8(ImageBuffer::new(128, 128));
+                    (placeholder, Vec2::new(0, 0))
+                }
+            };
+            let rect_size = resized_image.width().min(resized_image.height());
+            resized_image = resized_image.crop(
+                (resized_image.width() - rect_size) / 2,
+                (resized_image.height() - rect_size) / 2,
+                rect_size,
+                rect_size,
+            );
+
+            let ui_image = ColorImage::from_rgba_unmultiplied(
+                [rect_size as _, rect_size as _],
+                &resized_image.to_rgba8(),
+            );
+            let texture_handle = ctx.load_texture(&filename, ui_image);
+            newly_loaded.insert(wallpaper_id, (texture_handle, original_size));
+            active_files.insert(wallpaper_id);
+        }
+
+        // Propagate change
+        let mut view = this.lock();
+        view.wallpaper_cache.extend(newly_loaded.into_iter());
+        view.wallpaper_cache.retain(|k, _| active_files.contains(k));
 
         Ok(())
     }
 
-    /// Performs wallpapers list operation.
-    fn action_perform_wallpaper(
-        model: Arc<Mutex<Application>>,
-        index: usize,
-        op: WallpaperListOperation,
-    ) {
-        let mut locked = model.lock();
-        locked.update_wallpaper(index, op);
-    }
+    fn update_monitors(this: Arc<Mutex<ApplicationView>>) {
+        let mut view = this.lock();
+        let viewmodel_ref = view.viewmodel.clone();
+        let viewmodel = viewmodel_ref.lock();
 
-    /// Sets selected wallpaper.
-    fn action_set_wallpaper(
-        model: Arc<Mutex<Application>>,
-        monitor_index: usize,
-        wallpaper_index: usize,
-    ) {
-        info!("Changing wallpaper: Monitor #{monitor_index}: Wallpaper #{wallpaper_index}");
-        let locked = model.lock();
-        match locked.apply_wallpaper_for_monitor(monitor_index, wallpaper_index) {
-            Ok(()) => (),
-            Err(e) => {
-                error!("Failed to set wallpaper: {e}");
-            }
-        }
-    }
-}
-
-pub struct MonitorView {
-    name: String,
-    position: Vec2<i32>,
-    size: Vec2<i32>,
-    preview_rect: Vec4<f32>,
-}
-
-impl MonitorView {
-    /// Constructs from Monitor model.
-    pub fn new(
-        source: &Monitor,
-        whole_topleft: Vec2<f32>,
-        whole_offset: Vec2<f32>,
-        divider: f32,
-    ) -> MonitorView {
-        let raw_position = source.position().as_::<f32>();
-        let raw_size = source.size().as_::<f32>();
-
-        let normalized_position = (raw_position - whole_topleft + whole_offset) / divider;
-        let normalized_size = raw_size / divider;
-
-        MonitorView {
-            name: source.name().to_string(),
-            position: source.position(),
-            size: source.size(),
-            preview_rect: Vec4::new(
-                normalized_position.x,
-                normalized_position.y,
-                normalized_position.x + normalized_size.x,
-                normalized_position.y + normalized_size.y,
-            ),
-        }
-    }
-}
-
-pub struct WallpaperView {
-    uuid: Uuid,
-    filename: String,
-    size: Option<Vec2<u32>>,
-    fitting: Fitting,
-}
-
-impl WallpaperView {
-    pub fn new(source: &Wallpaper) -> WallpaperView {
-        WallpaperView {
-            uuid: source.id(),
-            filename: source.filename().to_string(),
-            size: None,
-            fitting: source.fitting(),
-        }
+        view.selected_monitor_index = if viewmodel.monitors.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
     }
 }
 
 /// User event type for `Application`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ApplicationViewEvent {
+pub enum ApplicationWindowEvent {
     Exit,
     RepaintRequested,
     ShowRequested(WindowId),
     HideRequested(WindowId),
 }
 
-impl EguiEvent for ApplicationViewEvent {
-    fn repaint() -> ApplicationViewEvent {
-        ApplicationViewEvent::RepaintRequested
+impl EguiEvent for ApplicationWindowEvent {
+    fn repaint() -> ApplicationWindowEvent {
+        ApplicationWindowEvent::RepaintRequested
     }
 
     fn show_window(window_id: winit::window::WindowId) -> Self {
-        ApplicationViewEvent::ShowRequested(window_id)
+        ApplicationWindowEvent::ShowRequested(window_id)
     }
 
     fn hide_window(window_id: winit::window::WindowId) -> Self {
-        ApplicationViewEvent::HideRequested(window_id)
+        ApplicationWindowEvent::HideRequested(window_id)
     }
 
     fn exit() -> Self {
-        ApplicationViewEvent::Exit
+        ApplicationWindowEvent::Exit
     }
 
     fn should_repaint(&self) -> bool {
-        *self == ApplicationViewEvent::RepaintRequested
+        *self == ApplicationWindowEvent::RepaintRequested
     }
 
     fn should_change_window(&self) -> Option<(WindowId, bool)> {
@@ -705,6 +556,6 @@ impl EguiEvent for ApplicationViewEvent {
     }
 
     fn should_exit(&self) -> bool {
-        *self == ApplicationViewEvent::Exit
+        *self == ApplicationWindowEvent::Exit
     }
 }

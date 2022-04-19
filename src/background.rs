@@ -1,4 +1,4 @@
-use crate::{model::application::Application, windows::WallpaperInterface};
+use crate::{application::Application, windows::WallpaperInterface};
 
 use std::sync::Arc;
 

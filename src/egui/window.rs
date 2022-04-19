@@ -1,4 +1,4 @@
-use crate::view::{EguiEvent, EventProxy, View};
+use crate::egui::{EguiEvent, EventProxy, View};
 
 use std::sync::Arc;
 
@@ -165,8 +165,10 @@ impl<V: View<E>, E: EguiEvent> EguiWindow<V, E> {
                     self.surface_config.height = new_size.height;
                     self.surface.configure(&self.device, &self.surface_config);
                 }
+                println!("22");
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                println!("New: {scale_factor}");
                 let mut locked = self.egui_base_frame.0.lock().expect("Poisoned");
                 locked.info.native_pixels_per_point = Some(scale_factor as f32);
             }
@@ -208,10 +210,10 @@ impl<V: View<E>, E: EguiEvent> EguiWindow<V, E> {
     fn draw_egui(&mut self, input: RawInput) -> (Vec<ClippedMesh>, TexturesDelta, bool) {
         let full_output = {
             self.egui_context.begin_frame(input);
+            let frame = self.egui_base_frame.clone();
 
             self.runtime.block_on(async {
                 let mut locked = self.view.lock();
-                let frame = self.egui_base_frame.clone();
                 locked.update(&self.egui_context, &frame);
             });
 

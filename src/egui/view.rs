@@ -1,7 +1,4 @@
-pub mod application;
-pub mod event;
-
-pub use self::event::{EguiEvent, EventProxy};
+pub use crate::egui::{EguiEvent, EventProxy};
 
 use std::sync::Arc;
 

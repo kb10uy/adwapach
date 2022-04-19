@@ -1,16 +1,15 @@
 #![cfg_attr(production, windows_subsystem = "windows")]
 
+mod application;
 mod background;
 mod egui;
-mod model;
-mod view;
+mod mvvm;
 mod windows;
 
 use crate::{
+    application::{Application, ApplicationView, ApplicationViewModel},
     background::load_monitor_info,
-    egui::EguiWindow,
-    model::application::Application,
-    view::{application::ApplicationView, EguiEvent},
+    egui::{EguiEvent, EguiWindow},
     windows::{initialize_com, terminate_com},
 };
 
@@ -32,7 +31,8 @@ fn main() -> Result<()> {
     initialize_com(false)?;
 
     let application = Application::new();
-    let application_view = ApplicationView::new(application.clone())?;
+    let application_viewmodel = ApplicationViewModel::new(application.clone());
+    let application_view = ApplicationView::new(application_viewmodel)?;
     let mut application_window = runtime.block_on(EguiWindow::create(
         &event_loop,
         runtime.clone(),
