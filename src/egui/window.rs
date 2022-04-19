@@ -10,9 +10,10 @@ use epi::{
     backend::{AppOutput, FrameData},
     Frame as EpiFrame, IntegrationInfo,
 };
+use log::error;
 use parking_lot::Mutex;
 use tokio::runtime::Runtime;
-use wgpu::{Device, Queue, Surface, SurfaceConfiguration, TextureView};
+use wgpu::{Device, Queue, Surface, SurfaceConfiguration, SurfaceError, TextureView};
 use winit::{
     dpi::LogicalSize,
     event::WindowEvent,
@@ -175,7 +176,14 @@ impl<V: View<E>, E: EguiEvent> EguiWindow<V, E> {
 
     /// Redraws UI.
     pub fn redraw(&mut self) -> Result<ControlFlow> {
-        let output_frame = self.surface.get_current_texture()?;
+        let output_frame = match self.surface.get_current_texture() {
+            Ok(f) => f,
+            Err(SurfaceError::Outdated) => return Ok(ControlFlow::Poll),
+            Err(e) => {
+                error!("Failed to fetch surface texture: {e}");
+                return Ok(ControlFlow::Poll);
+            }
+        };
         let texture_view = output_frame.texture.create_view(&Default::default());
 
         // Update view
