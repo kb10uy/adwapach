@@ -157,18 +157,13 @@ impl<V: View<E>, E: EguiEvent> EguiWindow<V, E> {
                 self.event_proxy.request_hide(self.window.id());
             }
             WindowEvent::Resized(new_size) => {
-                // Resize with 0 width and height is used by winit to signal a minimize event on Windows.
-                // See: https://github.com/rust-windowing/winit/issues/208
-                // This solves an issue where the app would panic when minimizing on Windows.
                 if new_size.width > 0 && new_size.height > 0 {
                     self.surface_config.width = new_size.width;
                     self.surface_config.height = new_size.height;
                     self.surface.configure(&self.device, &self.surface_config);
                 }
-                println!("22");
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                println!("New: {scale_factor}");
                 let mut locked = self.egui_base_frame.0.lock().expect("Poisoned");
                 locked.info.native_pixels_per_point = Some(scale_factor as f32);
             }
@@ -210,9 +205,9 @@ impl<V: View<E>, E: EguiEvent> EguiWindow<V, E> {
     fn draw_egui(&mut self, input: RawInput) -> (Vec<ClippedMesh>, TexturesDelta, bool) {
         let full_output = {
             self.egui_context.begin_frame(input);
-            let frame = self.egui_base_frame.clone();
 
             self.runtime.block_on(async {
+                let frame = self.egui_base_frame.clone();
                 let mut locked = self.view.lock();
                 locked.update(&self.egui_context, &frame);
             });
