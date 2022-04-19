@@ -167,6 +167,9 @@ impl<V: View<E>, E: EguiEvent> EguiWindow<V, E> {
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 let mut locked = self.egui_base_frame.0.lock().expect("Poisoned");
                 locked.info.native_pixels_per_point = Some(scale_factor as f32);
+
+                // Call it also for State, or we will have non-scaled lettebox.
+                self.egui_state.on_event(&self.egui_context, &event);
             }
             event => {
                 self.egui_state.on_event(&self.egui_context, &event);
